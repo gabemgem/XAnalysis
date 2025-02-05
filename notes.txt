@@ -1,0 +1,16 @@
+assumptions:
+distribution of promoted posts is similar to regular posts
+notes are generally negative for the externality
+misleading categories
+externality of worst posts is $1.53 (Goldstein 2014)
+
+calculations:
+v = random cost * actions then divide by impressions/1000
+e = value from -3 to 3 from note type - 0-1 from average note rating
+	divide by 4 to bring magnitude to 0-1 and multiply by 1.53
+
+1) figure out if there is a good theoretical distribution to fit to the data
+2) add optimization algorithm to find some empirical tau start with affine functions
+3) impression counts per time value day
+4) make parameter for ratio of value to advertisers to externality (e.g. 1=equal value),
+	return to -1to1 ranges and then scale using parameter
