@@ -14,3 +14,12 @@ e = value from -3 to 3 from note type - 0-1 from average note rating
 3) impression counts per time value day
 4) make parameter for ratio of value to advertisers to externality (e.g. 1=equal value),
 	return to -1to1 ranges and then scale using parameter
+
+
+estimate user surplus from the externality
+estimate producer surplus
+can we transfer surplus from producer to user using mechanism
+    this makes a 'fairer' system
+can we increase participation rates by reducing annoyance
+    this makes a 'better' system = more overall welfare
+    can we estimate increased participation rates from the goldstein paper more?
