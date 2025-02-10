@@ -409,13 +409,21 @@ def ln_coeffs_to_coeffs(ln_coeffs):
     return coeffs
     
 
-def run_ga(data, externality_cost_per_impression, num_advertisers, num_auctions, random_seed, gene_space=None, k=1, polynomial_degree=1):
+def run_ga(data,
+           advertisers,
+           externality_cost_per_impression,
+           num_advertisers,
+           num_auctions,
+           random_seed,
+           gene_space=None,
+           k=1,
+           polynomial_degree=1,
+           initial_genes=None
+           ):
     externality_cost = externality_cost_per_impression
-    data['e'] = data['e'] * externality_cost
+
     
-    rng = np.random.default_rng(random_seed)
-    
-    advertisers = [ad_distribution(data, num_advertisers, rng) for _ in range(num_auctions)]
+
     
     def run_auction_set_fitness(ga_instance, tau_coeffs, solution_idx):
         w_coll = []
@@ -431,10 +439,15 @@ def run_ga(data, externality_cost_per_impression, num_advertisers, num_auctions,
         avg_coll_objective = np.mean(w_coll_objective)
         
         return avg_coll_objective
-    
+
+    initial_population = None
+    if initial_genes is not None:
+        initial_population = [[initial_genes[i]+random.uniform(-0.0001, 0.0001) for i in range(len(initial_genes))] for _ in range(19)]
+        initial_population.append(initial_genes)
 
     ga_instance = pygad.GA(
-        num_generations=1000,
+        num_generations=500*polynomial_degree,
+        initial_population=initial_population,
         num_parents_mating=10,
         fitness_func=run_auction_set_fitness,
         sol_per_pop=20,
@@ -447,7 +460,7 @@ def run_ga(data, externality_cost_per_impression, num_advertisers, num_auctions,
         # random_mutation_max_val=100,
         # random_mutation_min_val=-100,
         crossover_type='single_point',
-        on_generation=None,
+        on_generation=on_generation,
         random_seed=random_seed,
         parallel_processing=10
     )
@@ -511,7 +524,7 @@ def run_ga(data, externality_cost_per_impression, num_advertisers, num_auctions,
 #%%
 # ga_instance.plot_fitness()
 #%%
-externality_cost_variations = [0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1]
+externality_cost_variations = [0.01]#[0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1]
 k_variations = [1]
 polynomial_variations = [1, 2, 3]
 results = []
@@ -522,28 +535,40 @@ num_auctions = 500
 
 
 for k in k_variations:
-    for polynomial_degree in polynomial_variations:
-        gene_space = [
-            { 'low': 0, 'high': 15 },
-            { 'low': 0, 'high': 5 },
-            { 'low': 0, 'high': 0.001 },
-            { 'low': 0, 'high': 0.001 },
-        ]
-        gene_space = gene_space[:polynomial_degree+1]
-        for externality_cost_per_impression in externality_cost_variations:
-            tweet_data['v'] = tweet_data['action_per_month']
-            tweet_data['e'] = tweet_data['ext_per_month']
-            random_seed = random.randint(1,123456789)
+    for externality_cost_per_impression in externality_cost_variations:
+        tweet_data['v'] = tweet_data['action_per_month']
+        tweet_data['e'] = tweet_data['ext_per_month'] * externality_cost_per_impression
+
+        random_seed = random.randint(1, 123456789)
+
+        rng = np.random.default_rng(random_seed)
+
+        advertisers = [ad_distribution(tweet_data, num_advertisers, rng) for _ in range(num_auctions)]
+        initial_genes = None
+        for polynomial_degree in polynomial_variations:
+            gene_space = [
+                {'low': 0, 'high': 15},
+                {'low': 0, 'high': 5},
+                {'low': 0, 'high': 0.001},
+                {'low': 0, 'high': 0.001},
+            ]
+            gene_space = gene_space[:polynomial_degree + 1]
+
 
             ga_instance, auction_output = run_ga(
                 data=tweet_data,
+                advertisers=advertisers,
                 externality_cost_per_impression=externality_cost_per_impression,
                 num_advertisers=num_advertisers,
                 num_auctions=num_auctions,
                 random_seed=random_seed,
                 gene_space=gene_space,
                 k=k,
-                polynomial_degree=polynomial_degree)
+                polynomial_degree=polynomial_degree,
+                initial_genes = initial_genes,
+            )
+            best_solution, best_fitness, _ = ga_instance.best_solution()
+            initial_genes = [best_solution[i] if i<len(best_solution) else 0.0 for i in range(polynomial_degree+2)]
 
             result = compile_results(
                 externality_cost_per_impression=externality_cost_per_impression,

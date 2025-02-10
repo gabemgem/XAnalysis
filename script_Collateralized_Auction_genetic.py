@@ -457,5 +457,5 @@ for k in k_variations:
                 ga_instance, auction_output = run_ga(tweet_data, externality_cost_per_impression, num_advertisers, num_auctions, random_seed, gene_space, k, polynomial_degree)
                 result = compile_results(externality_cost_per_impression, num_advertisers, num_auctions, random_seed, k, polynomial_degree, replication+1, auction_output)
                 results.append(result)
-with open('ga_results2.pkl', 'wb') as f:
+with open('ga_results2_bad.pkl', 'wb') as f:
     pkl.dump(results, f)
