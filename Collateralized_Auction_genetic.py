@@ -199,6 +199,54 @@ def run_auction_set(tau_coeffs, advertisers, k=1):
     
     return (tau_coeffs, avg_coll_objective, avg_vcg_objective, w_coll_objective, w_vcg_objective, individual_welfares)
 
+# def run_auctions(num_auctions, 
+#                  num_advertisers, 
+#                  slope_magnitude_max, 
+#                  slope_step_size,
+#                  intercept_min,
+#                  intercept_max,
+#                  intercept_step_size,
+#                  data, 
+#                  k=1, 
+#                  rng=None):
+#     # output variables
+#     w_vcg = []
+#     w_coll = []
+#     advertisers = [ad_distribution(data, num_advertisers, rng) for _ in range(num_auctions)]
+#     
+#     grid = [
+#         (m, b) 
+#         for m in np.arange(-slope_magnitude_max, 0, slope_step_size) 
+#         for b in np.arange(intercept_min, intercept_max, intercept_step_size)
+#     ]
+#     
+#     results = Parallel(n_jobs=-1)(
+#         delayed(run_auction_set)(m, b, advertisers, k) 
+#         for (m, b) in tqdm(grid, desc='Auction Simulations')
+#     )
+#     # results[i] = (m, b, avg_coll_objective, avg_vcg_objective, w_coll_objective, w_vcg_objective)
+#     best_result = max(results, key=lambda x: x[2])
+#     best_m, best_b, best_avg_coll_welfare, best_avg_vcg_welfare, best_coll_welfare, best_vcg_welfare, best_individual_welfares = best_result
+#     best_line = (best_m, best_b)
+#             
+#     print('========================================')
+#     print('Finished Running Simulations')
+#     print(f'Best Tau: ad_value = {best_line[0]}*social_welfare + {best_line[1]}')
+#     print(f'Avg Collateralized Objective: {best_avg_coll_welfare}')
+#     # print(f'Avg VCG Welfare: {best_avg_vcg_welfare}')
+#     # print(f'\nChange in Total Welfare: {best_avg_coll_welfare - best_avg_vcg_welfare}')
+#     print('========================================')
+# 
+#     return {
+#         'advertisers': advertisers,
+#         'tau': best_line,
+#         'avg_coll_welfare': best_avg_coll_welfare,
+#         'avg_vcg_welfare': best_avg_vcg_welfare,
+#         'coll_welfare': best_coll_welfare,
+#         'vcg_welfare': best_vcg_welfare,
+#         'individual_welfares': best_individual_welfares
+#     }
+
 def print_stats(auction_output, ad_scaler=1, ext_scaler=1):
     
     individual_welfares = auction_output['individual_welfares']
@@ -267,7 +315,8 @@ def plot_advertisers(auction_output, ad_scaler=1, ext_scaler=1):
     tau_y = [tau(t, tau_coeffs) for t in tau_x]
     # tau_min = sum([tau_coeffs[i]*(min_e**i) for i in range(len(tau_coeffs))])
     # tau_max = sum([tau_coeffs[i]*(max_e**i) for i in range(len(tau_coeffs))])
-
+    
+    # %matplotlib notebook
     fig, axs = plt.subplots(1, 1, figsize=(10, 5))
     
     axs.scatter(e, v, alpha=0.5)
@@ -286,8 +335,7 @@ def compile_results(externality_cost_per_impression,
                     num_auctions, 
                     random_seed, 
                     k, 
-                    polynomial_degree,
-                    replication,
+                    polynomial_degree, 
                     auction_output):
     individual_welfares = auction_output['individual_welfares']
     w_vcg_ad = [v for v in individual_welfares['vcg_ad']]
@@ -302,8 +350,8 @@ def compile_results(externality_cost_per_impression,
         'random_seed': random_seed,
         'k': k,
         'polynomial_degree': polynomial_degree,
-        'replication': replication,
         'tau': auction_output['tau'],
+        'advertisers': auction_output['advertisers'],
         'w_vcg_adv': np.mean(w_vcg_ad),
         'w_coll_adv': np.mean(w_coll_ad),
         'w_vcg_ext': np.mean(w_vcg_ex),
@@ -313,7 +361,40 @@ def compile_results(externality_cost_per_impression,
     }
     return result
     
-
+#%%
+# num_auctions = 500
+# num_advertisers = 50
+# slope_magnitude_max = 15
+# slope_step_size = 0.1
+# intercept_min = -700
+# intercept_max = -500
+# intercept_step_size = 10
+# k=1
+# 
+# advertiser_scaler = tweet_data['action_per_month'].abs().max()
+# externality_scaler = tweet_data['ext_dollars_per_month'].abs().max()
+# 
+# tweet_data['v'] = tweet_data['action_per_month']# / advertiser_scaler
+# tweet_data['e'] = tweet_data['ext_dollars_per_month']# / externality_scaler
+# 
+# random_seed = 1234
+# rng = np.random.default_rng(random_seed)
+# 
+# auction_output = run_auctions(
+#     num_auctions, 
+#     num_advertisers, 
+#     slope_magnitude_max, 
+#     slope_step_size,
+#     intercept_min,
+#     intercept_max,
+#     intercept_step_size,
+#     data=tweet_data, 
+#     k=k, 
+#     rng=rng)
+# print_stats(auction_output)#, advertiser_scaler, externality_scaler)
+# plot_auctions(auction_output)#, advertiser_scaler, externality_scaler)
+# plot_advertisers(auction_output)#, advertiser_scaler, externality_scaler)
+#%%
 last_fitness = 0
 def on_generation(ga_instance):
     global last_fitness
@@ -384,13 +465,14 @@ def run_ga(data, externality_cost_per_impression, num_advertisers, num_auctions,
     best_tau_coeffs_ln = best_solution
     best_tau_coeffs = ln_coeffs_to_coeffs(best_tau_coeffs_ln)
     polynomial_string = ' + '.join([f'{c:.6f}*x^{i}' if i != 0 else f'{c:.6f}' for i, c in enumerate(best_tau_coeffs)])
-    # print(f"Best line found: y = {polynomial_string}")
+    print(f"Best line found: y = {polynomial_string}")
     # print("Fitness:", best_fitness)
     
     best_results = run_auction_set(best_tau_coeffs, advertisers, k)
     best_tau_coeffs_2, best_avg_coll_welfare, best_avg_vcg_welfare, best_coll_welfare, best_vcg_welfare, best_individual_welfares = best_results
     
     # print(best_tau_coeffs)
+    # print(best_tau_coeffs_2)
     
     auction_output = {
             'advertisers': advertisers,
@@ -401,9 +483,9 @@ def run_ga(data, externality_cost_per_impression, num_advertisers, num_auctions,
             'vcg_welfare': best_vcg_welfare,
             'individual_welfares': best_individual_welfares
         }
-    # print_stats(auction_output)
+    print_stats(auction_output)
     # plot_auctions(auction_output)
-    # plot_advertisers(auction_output)
+    plot_advertisers(auction_output)
     return ga_instance, auction_output
    
    
@@ -414,7 +496,7 @@ def run_ga(data, externality_cost_per_impression, num_advertisers, num_auctions,
 # num_auctions = 500
 # random_seed = None
 # k=1
-# polynomial_degree=3
+# polynomial_degree=1
 # gene_space = [
 #         { 'low': 0, 'high': 15 },
 #         { 'low': 0, 'high': 5 },
@@ -429,14 +511,12 @@ def run_ga(data, externality_cost_per_impression, num_advertisers, num_auctions,
 #%%
 # ga_instance.plot_fitness()
 #%%
-externality_cost_variations = [0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1, 0.5, 1]
-k_variations = [1, 2, 5]
+externality_cost_variations = [0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1]
+k_variations = [1]
 polynomial_variations = [1, 2, 3]
 results = []
-replications = 2
 
-tweet_data['v'] = tweet_data['action_per_month']# / advertiser_scaler
-tweet_data['e'] = tweet_data['ext_per_month']# / externality_scaler 
+
 num_advertisers = 20
 num_auctions = 500
 
@@ -451,11 +531,39 @@ for k in k_variations:
         ]
         gene_space = gene_space[:polynomial_degree+1]
         for externality_cost_per_impression in externality_cost_variations:
-            for replication in range(replications):
-                random_seed = random.randint(1,123456789)
+            tweet_data['v'] = tweet_data['action_per_month']
+            tweet_data['e'] = tweet_data['ext_per_month']
+            random_seed = random.randint(1,123456789)
 
-                ga_instance, auction_output = run_ga(tweet_data, externality_cost_per_impression, num_advertisers, num_auctions, random_seed, gene_space, k, polynomial_degree)
-                result = compile_results(externality_cost_per_impression, num_advertisers, num_auctions, random_seed, k, polynomial_degree, replication+1, auction_output)
-                results.append(result)
-with open('ga_results2.pkl', 'wb') as f:
+            ga_instance, auction_output = run_ga(
+                data=tweet_data,
+                externality_cost_per_impression=externality_cost_per_impression,
+                num_advertisers=num_advertisers,
+                num_auctions=num_auctions,
+                random_seed=random_seed,
+                gene_space=gene_space,
+                k=k,
+                polynomial_degree=polynomial_degree)
+
+            result = compile_results(
+                externality_cost_per_impression=externality_cost_per_impression,
+                num_advertisers=num_advertisers,
+                num_auctions=num_auctions,
+                random_seed=random_seed,
+                k=k,
+                polynomial_degree=polynomial_degree,
+                auction_output=auction_output)
+            results.append(result)
+with open('ga_results.pkl', 'wb') as f:
     pkl.dump(results, f)
+#%%
+# print(results)
+#%%
+# with open('ga_results2.pkl', 'rb') as f:
+#     results = pkl.load(f)
+#
+# print(len(results))
+# print(results[0])
+#
+# print([r['polynomial_degree'] for r in results])
+# print(tweet_data.shape)
