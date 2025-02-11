@@ -3,6 +3,7 @@ import random
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from tqdm import tqdm
 from joblib import Parallel, delayed
 import pygad
@@ -278,29 +279,36 @@ def plot_auctions(auction_output, ad_scaler=1, ext_scaler=1):
     w_vcg_ex = [e*ext_scaler for e in individual_welfares['vcg_ex']]
     w_coll_ex = [e*ext_scaler for e in individual_welfares['coll_ex']]
     
-    # plot welfare histograms
-    plt.hist([counterfactual_welfare, collateralized_welfare], bins=30, alpha=0.5, color=['red', 'blue'], label=['Counterfactual', 'Collateralized'])
-    plt.legend(loc='upper right')
-    plt.xlabel('Welfare')
-    plt.ylabel('Frequency')
-    plt.title('Welfare Distribution')
-    plt.show()
-    
+    # plot 3 welfare histograms in one plot
+    fig = plt.figure(figsize=(8,7))
+    gs = gridspec.GridSpec(2,2,figure=fig)
+
     # plot individual advertiser and externality welfares
-    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-    axs[0].hist([w_vcg_ad, w_coll_ad], bins=30, alpha=0.5, color=['red', 'blue'], label=['Counterfactual', 'Collateralized'])
-    axs[0].legend(loc='upper right')
-    axs[0].set_xlabel('Advertiser Welfare')
-    axs[0].set_ylabel('Frequency')
-    axs[0].set_title('Advertiser Welfare Distribution')
-    
-    axs[1].hist([w_vcg_ex, w_coll_ex], bins=30, alpha=0.5, color=['red', 'blue'], label=['Counterfactual', 'Collateralized'])
-    axs[1].legend(loc='upper right')
-    axs[1].set_xlabel('Externality Welfare')
-    axs[1].set_ylabel('Frequency')
-    axs[1].set_title('Externality Welfare Distribution')
-    
-    fig.show()
+    ax1 = fig.add_subplot(gs[0,0])
+    ax1.hist([w_vcg_ad, w_coll_ad], bins=30, alpha=0.5, color=['red', 'blue'],
+                label=['Counterfactual', 'Collateralized'])
+    ax1.legend(loc='upper right')
+    ax1.set_xlabel('Advertiser Welfare')
+    ax1.set_ylabel('Frequency')
+    ax1.set_title('Advertiser Welfare Distribution (ζ=0.01)')
+
+    ax2 = fig.add_subplot(gs[0,1])
+    ax2.hist([w_vcg_ex, w_coll_ex], bins=30, alpha=0.5, color=['red', 'blue'],
+                label=['Counterfactual', 'Collateralized'])
+    ax2.legend(loc='upper right')
+    ax2.set_xlabel('Externality Welfare')
+    ax2.set_ylabel('Frequency')
+    ax2.set_title('Externality Welfare Distribution (ζ=0.01)')
+    ax2.tick_params(axis='x', rotation=45)
+
+    ax3 = fig.add_subplot(gs[1,:])
+    ax3.hist([counterfactual_welfare, collateralized_welfare], bins=30, alpha=0.5, color=['red', 'blue'], label=['Counterfactual', 'Collateralized'])
+    ax3.legend(loc='upper right')
+    ax3.set_xlabel('Total Welfare')
+    ax3.set_ylabel('Frequency')
+    ax3.set_title('Total Welfare Distribution (ζ=0.01)')
+    plt.tight_layout()
+    plt.show()
     
     
 def plot_advertisers(auction_output, ad_scaler=1, ext_scaler=1):
@@ -405,7 +413,7 @@ def on_generation(ga_instance):
     last_fitness = ga_instance.best_solution(pop_fitness=ga_instance.last_generation_fitness)[1]
     
 def ln_coeffs_to_coeffs(ln_coeffs):
-    coeffs = [-1*(np.exp(c)-1) for c in ln_coeffs]
+    coeffs = [np.sign(c)*(np.exp(abs(c))-1) for c in ln_coeffs]
     return coeffs
     
 
@@ -446,7 +454,7 @@ def run_ga(data,
         initial_population.append(initial_genes)
 
     ga_instance = pygad.GA(
-        num_generations=500*polynomial_degree,
+        num_generations=600 if polynomial_degree == 1 else 5000,
         initial_population=initial_population,
         num_parents_mating=10,
         fitness_func=run_auction_set_fitness,
@@ -460,7 +468,7 @@ def run_ga(data,
         # random_mutation_max_val=100,
         # random_mutation_min_val=-100,
         crossover_type='single_point',
-        on_generation=on_generation,
+        on_generation=None,
         random_seed=random_seed,
         parallel_processing=10
     )
@@ -497,7 +505,7 @@ def run_ga(data,
             'individual_welfares': best_individual_welfares
         }
     print_stats(auction_output)
-    # plot_auctions(auction_output)
+    plot_auctions(auction_output)
     plot_advertisers(auction_output)
     return ga_instance, auction_output
    
@@ -525,7 +533,7 @@ def run_ga(data,
 # ga_instance.plot_fitness()
 #%%
 externality_cost_variations = [0.01]#[0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1]
-k_variations = [1]
+k_variations = [1]#, 2, 5]
 polynomial_variations = [1, 2, 3]
 results = []
 
@@ -533,24 +541,25 @@ results = []
 num_advertisers = 20
 num_auctions = 500
 
-
 for k in k_variations:
     for externality_cost_per_impression in externality_cost_variations:
         tweet_data['v'] = tweet_data['action_per_month']
         tweet_data['e'] = tweet_data['ext_per_month'] * externality_cost_per_impression
 
-        random_seed = random.randint(1, 123456789)
+        random_seed = 39207276#random.randint(1, 123456789)
 
         rng = np.random.default_rng(random_seed)
 
         advertisers = [ad_distribution(tweet_data, num_advertisers, rng) for _ in range(num_auctions)]
+        # advertisers = [[(row['v'], row['e']) for index, row in tweet_data.iterrows()]]
+
         initial_genes = None
         for polynomial_degree in polynomial_variations:
             gene_space = [
-                {'low': 0, 'high': 15},
-                {'low': 0, 'high': 5},
-                {'low': 0, 'high': 0.001},
-                {'low': 0, 'high': 0.001},
+                {'low': -15, 'high': 15},
+                {'low': -5, 'high': 5},
+                {'low': -0.001, 'high': 0.001},
+                {'low': -0.001, 'high': 0.001},
             ]
             gene_space = gene_space[:polynomial_degree + 1]
 
@@ -568,6 +577,7 @@ for k in k_variations:
                 initial_genes = initial_genes,
             )
             best_solution, best_fitness, _ = ga_instance.best_solution()
+            ga_instance.plot_fitness()
             initial_genes = [best_solution[i] if i<len(best_solution) else 0.0 for i in range(polynomial_degree+2)]
 
             result = compile_results(
@@ -579,8 +589,8 @@ for k in k_variations:
                 polynomial_degree=polynomial_degree,
                 auction_output=auction_output)
             results.append(result)
-with open('ga_results.pkl', 'wb') as f:
-    pkl.dump(results, f)
+            with open('ga_results.pkl', 'wb') as f:
+                pkl.dump(results, f)
 #%%
 # print(results)
 #%%
