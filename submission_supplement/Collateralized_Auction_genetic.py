@@ -356,6 +356,8 @@ def run_ga(data,
         w_coll = []
         # convert tau_coeffs from ln to exp
         coeffs = ln_coeffs_to_coeffs(tau_coeffs)
+
+        tested_functions.append(coeffs)
             
         for advertiser_set in advertisers:
                 _, w_coll_i = run_auction(advertiser_set, coeffs, k)
@@ -373,7 +375,7 @@ def run_ga(data,
         initial_population.append(initial_genes)
 
     ga_instance = pygad.GA(
-        num_generations=600 if polynomial_degree == 1 else 5000,
+        num_generations=600 if polynomial_degree == 1 else 1000,
         initial_population=initial_population,
         num_parents_mating=10,
         fitness_func=run_auction_set_fitness,
@@ -428,10 +430,12 @@ def run_ga(data,
    
 
 
-externality_cost_variations = [0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1]
-k_variations = [1, 2, 5]
+externality_cost_variations = [0.01]#[0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1]
+k_variations = [1]#[1, 2, 5]
 polynomial_variations = [1, 2, 3]
 results = []
+
+tested_functions = []
 
 
 num_advertisers = 20
@@ -473,7 +477,7 @@ for k in k_variations:
             )
             best_solution, best_fitness, _ = ga_instance.best_solution()
             ga_instance.plot_fitness()
-            initial_genes = [best_solution[i] if i<len(best_solution) else 0.0 for i in range(polynomial_degree+2)]
+            # initial_genes = [best_solution[i] if i<len(best_solution) else 0.0 for i in range(polynomial_degree+2)]
 
             result = compile_results(
                 externality_cost_per_impression=externality_cost_per_impression,
@@ -486,3 +490,8 @@ for k in k_variations:
             results.append(result)
             with open('ga_results.pkl', 'wb') as f:
                 pkl.dump(results, f)
+
+
+# write tested functions to file
+with open('tested_functions_2.pkl', 'wb') as f:
+    pkl.dump(tested_functions, f)
