@@ -2,12 +2,167 @@
 import random
 import pandas as pd
 import numpy as np
-# import matplotlib.pyplot as plt
-# import matplotlib.gridspec as gridspec
 import pygad
 import time
 import pickle as pkl
 import sys
+
+from numpy.polynomial import Polynomial  # uses increasing-order coefficients [c0, c1, c2, ...]
+
+def _compose_with_linear(coeffs, a, b):
+    """
+    Return Polynomial p(ax + b) given p(x) with increasing-order coeffs.
+    Uses Horner's rule; works on old NumPy w/o Polynomial.compose.
+    """
+    L = Polynomial([b, a])        # L(x) = b + a*x
+    q = Polynomial([0.0])         # start at 0
+    for c in reversed(coeffs):    # Horner: q = q*L + c
+        q = q * L + c
+    return q
+
+class NegOneOneScaler:
+    """
+    Normalize numeric data to [-1, 1] (or any feature_range) and invert later.
+    Works with pandas Series or DataFrame. Includes general polynomial coefficient transforms.
+    """
+    def __init__(self, feature_range=(-1.0, 1.0), joint=False):
+        self.feature_range = feature_range
+        self.joint = joint
+        self.data_min_ = None
+        self.data_max_ = None
+        self.columns_ = None
+        self._fitted = False
+
+    def fit(self, X):
+        if isinstance(X, pd.Series):
+            self.columns_ = [X.name] if X.name is not None else [0]
+            self.data_min_ = pd.Series([X.min()], index=self.columns_)
+            self.data_max_ = pd.Series([X.max()], index=self.columns_)
+        elif isinstance(X, pd.DataFrame):
+            self.columns_ = list(X.columns)
+            if self.joint:
+                gmin, gmax = X.min().min(), X.max().max()
+                self.data_min_ = pd.Series([gmin]*len(self.columns_), index=self.columns_)
+                self.data_max_ = pd.Series([gmax]*len(self.columns_), index=self.columns_)
+            else:
+                self.data_min_ = X.min()
+                self.data_max_ = X.max()
+        else:
+            raise TypeError("X must be a pandas Series or DataFrame")
+        self._fitted = True
+        return self
+
+    def transform(self, X):
+        self._check_is_fitted()
+        a, b = self.feature_range
+        rng = self.data_max_ - self.data_min_
+
+        def _scale(s, col):
+            denom = rng[col]
+            if denom == 0 or np.isclose(denom, 0):
+                return pd.Series(np.full(len(s), (a + b) / 2.0), index=s.index, name=s.name)
+            return ((s - self.data_min_[col]) / denom) * (b - a) + a
+
+        if isinstance(X, pd.Series):
+            col = self.columns_[0]
+            return _scale(X, col)
+        elif isinstance(X, pd.DataFrame):
+            missing = set(self.columns_) - set(X.columns)
+            if missing:
+                raise ValueError(f"X is missing columns seen during fit: {missing}")
+            return X[self.columns_].apply(lambda s: _scale(s, s.name))
+        else:
+            raise TypeError("X must be a pandas Series or DataFrame")
+
+    def inverse_transform(self, X):
+        self._check_is_fitted()
+        a, b = self.feature_range
+        scale = (b - a)
+        rng = self.data_max_ - self.data_min_
+
+        def _inv(s, col):
+            denom = rng[col]
+            if denom == 0 or np.isclose(denom, 0):
+                return pd.Series(np.full(len(s), self.data_min_[col]), index=s.index, name=s.name)
+            return ((s - a) / scale) * denom + self.data_min_[col]
+
+        if isinstance(X, pd.Series):
+            col = self.columns_[0]
+            return _inv(X, col)
+        elif isinstance(X, pd.DataFrame):
+            missing = set(self.columns_) - set(X.columns)
+            if missing:
+                raise ValueError(f"X is missing columns seen during fit: {missing}")
+            return X[self.columns_].apply(lambda s: _inv(s, s.name))
+        else:
+            raise TypeError("X must be a pandas Series or DataFrame")
+
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+
+    # ----------------- helpers -----------------
+
+    def _affine_params(self, col):
+        """Return (alpha, beta) for x_n = alpha*x + beta for a given column."""
+        a, b = self.feature_range  # default (-1, 1)
+        min_v = self.data_min_[col]
+        max_v = self.data_max_[col]
+        rng = max_v - min_v
+        if np.isclose(rng, 0):
+            raise ValueError(f"Column '{col}' is constant; polynomial transforms are ill-defined.")
+        alpha = (b - a) / rng
+        beta = a - alpha * min_v
+        return alpha, beta
+
+    # ----------------- general polynomial transforms -----------------
+
+    def poly_from_normalized(self, coeffs_n, x_col, y_col):
+        """
+        Convert coefficients from NORMALIZED space (y_n = sum a_k x_n^k) to ORIGINAL space (y = sum A_k x^k).
+        coeffs_n: length 2-4 (linear/quadratic/cubic), increasing order [a0, a1, ...].
+        """
+        self._check_is_fitted()
+        if not (2 <= len(coeffs_n) <= 4):
+            raise ValueError("Expected polynomial length 2–4 (linear/quadratic/cubic).")
+
+        ax, bx = self._affine_params(x_col)  # x_n = ax*x + bx
+        ay, by = self._affine_params(y_col)  # y_n = ay*y + by
+
+        # p_in_x = p_n(ax*x + bx)
+        p_in_x = _compose_with_linear(coeffs_n, ax, bx)
+
+        # y = (y_n - by)/ay
+        p_y = (p_in_x - by) / ay
+
+        coefs = p_y.coef
+        coefs[np.isclose(coefs, 0, atol=1e-15)] = 0.0
+        return coefs.tolist()
+
+    def poly_to_normalized(self, coeffs_orig, x_col, y_col):
+        """
+        Convert coefficients from ORIGINAL space -> NORMALIZED space.
+        Increasing-order coefficients in, increasing-order out.
+        """
+        self._check_is_fitted()
+        if not (2 <= len(coeffs_orig) <= 4):
+            raise ValueError("Expected polynomial length 2–4 (linear/quadratic/cubic).")
+
+        ax, bx = self._affine_params(x_col)  # x_n = ax*x + bx  ->  x = (x_n - bx)/ax
+        ay, by = self._affine_params(y_col)  # y_n = ay*y + by
+
+        # p_in_xn = p( (x_n - bx)/ax )
+        p_in_xn = _compose_with_linear(coeffs_orig, 1.0/ax, -bx/ax)
+
+        # y_n = ay * p_in_xn + by
+        p_n = ay * p_in_xn + by
+
+        coefs = p_n.coef
+        coefs[np.isclose(coefs, 0, atol=1e-15)] = 0.0
+        return coefs.tolist()
+
+    def _check_is_fitted(self):
+        if not self._fitted:
+            raise RuntimeError("Scaler is not fitted. Call fit(X) or fit_transform(X) first.")
 
 
 def main(args):
@@ -36,15 +191,21 @@ def main(args):
     if random_k:
         k = rng.integers(1, int(num_items*0.1))
 
-    advertisers = [ad_distribution(data, num_items, rng) for _ in range(num_auctions)]
+    # normalize v and e to [-1, 1]
+    scaler = NegOneOneScaler()
+    scaler.fit(data[['v', 'e']])
+    data_n = scaler.transform(data[['v', 'e']])
+
+    all_advertisers = [ad_distribution(data, data_n, num_items, rng) for _ in range(num_auctions)]
+    advertisers_original, advertisers = zip(*all_advertisers)
 
     initial_genes = None
 
     gene_space = [
-        {'low': -15, 'high': 15},
-        {'low': -5, 'high': 5},
-        {'low': -0.001, 'high': 0.001},
-        {'low': -0.001, 'high': 0.001},
+        {'low': -3, 'high': 3},
+        {'low': -10, 'high': 10},
+        {'low': -10, 'high': 10},
+        {'low': -10, 'high': 10},
     ]
     gene_space = gene_space[:polynomial_degree + 1]
 
@@ -61,8 +222,6 @@ def main(args):
         initial_genes=initial_genes,
         num_generations=num_generations,
     )
-    best_solution, best_fitness, _ = ga_instance.best_solution()
-    ga_instance.plot_fitness()
 
     result = compile_results(
         externality_cost_per_impression=externality_cost,
@@ -71,9 +230,13 @@ def main(args):
         random_seed=random_seed,
         k=k,
         polynomial_degree=polynomial_degree,
-        auction_output=auction_output)
+        auction_output=auction_output,
+        ga_instance=ga_instance,
+        scaler=scaler,
+        advertisers=advertisers_original,
+    )
     results = [result]
-    with open(f'./output/ga_results_{id}.pkl', 'wb') as f:
+    with open(f'./output/results/ga_results_{id}.pkl', 'wb') as f:
         pkl.dump(results, f)
 
 def print_usage():
@@ -148,7 +311,7 @@ def parse_args(argv):
         elif arg == '--scc-it':
             i += 1
             scc_it = int(argv[i])
-            k_variations = [1, 2, 5]
+            k_variations = [1]
             externality_cost_variations = [0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1]
             args['k'] = k_variations[scc_it % len(k_variations)]
             args['externality_cost'] = externality_cost_variations[(scc_it // len(k_variations)) % len(externality_cost_variations)]
@@ -173,35 +336,25 @@ def parse_args(argv):
     return args
 
 
-def ad_distribution(data, num_advertisers, rng):
-    sample = data.sample(n=num_advertisers, random_state=rng)
-    advertisers = [(row['v'], row['e']) for index, row in sample.iterrows()]
-    # v = rng.choice(average_ad_costs, 1, p=ad_cost_probabilities) * tweet_data['action_count_per_1000_impressions'].iloc[random_i]
-    # e = tweet_data['externality_cpm'][random_i]
-    return advertisers
-#%% md
-# ## Auction
-# 1. Initialize advertiser ad values according to parameters
-# 2. Run counterfactual second-price auction
-#  - Advertisers decide on bid ($v$, honest)
-#  - Everyone bids
-#  - Record $(v_1, e_1, v_1+e_1) = w_{vcg}$
-# 3. Run collateralized second-price auction
-#  - Advertisers decide on bid ($v$, honest)
-#  - Advertisers with $v_i > \tau(v_i, e_i)$ place bid
-#  - Record $(v_1, e_1, v_1+e_1) = w_{coll}$
-# 
-#  Make change to allow for any number of accepted bids (k). If no advertisers pass the tau check, output welfare of 0. Output v-vector that is v1, v1+v2, v1+...+vk etc. Visualize:
-#  - histogram of welfare for given k
-#  - line (x=k, y=avg welfare for k)
-#%%
+def ad_distribution(data, data_n, num_advertisers, rng):
+    # sample indices
+    sampled_indices = rng.choice(data.index, size=num_advertisers, replace=False)
+    # get original and normalized values
+    sampled_data = data.loc[sampled_indices]
+    sampled_data_n = data_n.loc[sampled_indices]
+    # create list of advertisers and their normalized values
+    advertisers = [(row['v'], row['e']) for index, row in sampled_data.iterrows()]
+    advertisers_n = [(row['v'], row['e']) for index, row in sampled_data_n.iterrows()]
+
+    return (advertisers, advertisers_n)
+
 def auction_objective(w_results, ad_scaler=1, ext_scaler=1):
     return (w_results[0]*ad_scaler)+(w_results[1]*ext_scaler)
 
-def tau(e, coeffs):
+def tau(externality, coeffs):
     tau_val = 0
     for i, coeff in enumerate(coeffs):
-        tau_val += coeff * (e**i)
+        tau_val += coeff * (externality**i)
     return tau_val
 
 def run_auction(advertisers, tau_coeffs, k=1):
@@ -276,75 +429,6 @@ def print_stats(auction_output, ad_scaler=1, ext_scaler=1):
     print(f'Avg. Collateralized Total Welfare: {np.mean([ad+ex for ad, ex in zip(w_coll_ad, w_coll_ex)]):.2f}')
     print(f'Avg. Change in Total Welfare: {np.mean([ad+ex for ad, ex in zip(w_coll_ad, w_coll_ex)]) - np.mean([ad+ex for ad, ex in zip(w_vcg_ad, w_vcg_ex)]):.2f}')
     print('========================================\n')
-
-# def plot_auctions(auction_output, ad_scaler=1, ext_scaler=1):
-#     counterfactual_welfare = auction_output['vcg_welfare']
-#     collateralized_welfare = auction_output['coll_welfare']
-#
-#     individual_welfares = auction_output['individual_welfares']
-#     w_vcg_ad = [v*ad_scaler for v in individual_welfares['vcg_ad']]
-#     w_coll_ad = [v*ad_scaler for v in individual_welfares['coll_ad']]
-#     w_vcg_ex = [e*ext_scaler for e in individual_welfares['vcg_ex']]
-#     w_coll_ex = [e*ext_scaler for e in individual_welfares['coll_ex']]
-#
-#     # plot 3 welfare histograms in one plot
-#     fig = plt.figure(figsize=(8,7))
-#     gs = gridspec.GridSpec(2,2,figure=fig)
-#
-#     # plot individual advertiser and externality welfares
-#     ax1 = fig.add_subplot(gs[0,0])
-#     ax1.hist([w_vcg_ad, w_coll_ad], bins=30, alpha=0.5, color=['red', 'blue'],
-#                 label=['Counterfactual', 'Collateralized'])
-#     ax1.legend(loc='upper right')
-#     ax1.set_xlabel('Advertiser Welfare')
-#     ax1.set_ylabel('Frequency')
-#     ax1.set_title('Advertiser Welfare Distribution (ζ=0.01)')
-#
-#     ax2 = fig.add_subplot(gs[0,1])
-#     ax2.hist([w_vcg_ex, w_coll_ex], bins=30, alpha=0.5, color=['red', 'blue'],
-#                 label=['Counterfactual', 'Collateralized'])
-#     ax2.legend(loc='upper right')
-#     ax2.set_xlabel('Externality Welfare')
-#     ax2.set_ylabel('Frequency')
-#     ax2.set_title('Externality Welfare Distribution (ζ=0.01)')
-#     ax2.tick_params(axis='x', rotation=45)
-#
-#     ax3 = fig.add_subplot(gs[1,:])
-#     ax3.hist([counterfactual_welfare, collateralized_welfare], bins=30, alpha=0.5, color=['red', 'blue'], label=['Counterfactual', 'Collateralized'])
-#     ax3.legend(loc='upper right')
-#     ax3.set_xlabel('Total Welfare')
-#     ax3.set_ylabel('Frequency')
-#     ax3.set_title('Total Welfare Distribution (ζ=0.01)')
-#     plt.tight_layout()
-#     plt.show()
-#
-#
-# def plot_advertisers(auction_output, ad_scaler=1, ext_scaler=1):
-#     # plot all advertisers and best line
-#     advertisers = auction_output['advertisers']
-#     tau_coeffs = auction_output['tau']
-#     v = [ad[0]*ad_scaler for advertisers_set in advertisers for ad in advertisers_set]
-#     e = [ad[1]*ext_scaler for advertisers_set in advertisers for ad in advertisers_set]
-#     min_e, max_e = min(e)/3, max(e)
-#     division_size = int((max_e - min_e) / 100)
-#     tau_x = [min_e + i*division_size for i in range(100)]
-#     tau_y = [tau(t, tau_coeffs) for t in tau_x]
-#     # tau_min = sum([tau_coeffs[i]*(min_e**i) for i in range(len(tau_coeffs))])
-#     # tau_max = sum([tau_coeffs[i]*(max_e**i) for i in range(len(tau_coeffs))])
-#
-#     # %matplotlib notebook
-#     fig, axs = plt.subplots(1, 1, figsize=(10, 5))
-#
-#     axs.scatter(e, v, alpha=0.5)
-#     axs.plot(tau_x, tau_y, color='red')
-#     axs.set_ylabel('Advertiser Value')
-#     axs.set_xlabel('Externality Value')
-#     axs.set_title('Social Welfare Values vs Advertiser Values with Best Tau Line')
-#
-#     # set x and y limits
-#     axs.set_xlim(min_e, max_e)
-#     axs.set_ylim(0, max(v)*1.1)
-#     fig.show()
     
 def compile_results(externality_cost_per_impression, 
                     num_advertisers, 
@@ -352,12 +436,23 @@ def compile_results(externality_cost_per_impression,
                     random_seed, 
                     k, 
                     polynomial_degree, 
-                    auction_output):
-    individual_welfares = auction_output['individual_welfares']
-    w_vcg_ad = [v for v in individual_welfares['vcg_ad']]
-    w_coll_ad = [v for v in individual_welfares['coll_ad']]
-    w_vcg_ex = [e for e in individual_welfares['vcg_ex']]
-    w_coll_ex = [e for e in individual_welfares['coll_ex']]
+                    auction_output,
+                    ga_instance,
+                    scaler,
+                    advertisers,
+                    ):
+    tau_coeffs = scaler.poly_from_normalized(
+        auction_output['tau'],
+        x_col='e',
+        y_col='v',
+    )
+    best_results = run_auction_set(tau_coeffs, advertisers, k)
+    best_tau_coeffs_2, best_avg_coll_welfare, best_avg_vcg_welfare, best_coll_welfare, best_vcg_welfare, best_individual_welfares = best_results
+
+    w_vcg_ad = [v for v in best_individual_welfares['vcg_ad']]
+    w_coll_ad = [v for v in best_individual_welfares['coll_ad']]
+    w_vcg_ex = [e for e in best_individual_welfares['vcg_ex']]
+    w_coll_ex = [e for e in best_individual_welfares['coll_ex']]
 
     result = {
         'externality_cost_per_impression': externality_cost_per_impression,
@@ -366,8 +461,8 @@ def compile_results(externality_cost_per_impression,
         'random_seed': random_seed,
         'k': k,
         'polynomial_degree': polynomial_degree,
-        'tau': auction_output['tau'],
-        'advertisers': auction_output['advertisers'],
+        'tau': tau_coeffs,
+        'advertisers': advertisers,
         'w_vcg_adv': np.mean(w_vcg_ad),
         'w_coll_adv': np.mean(w_coll_ad),
         'w_vcg_ext': np.mean(w_vcg_ex),
@@ -387,11 +482,6 @@ def on_generation(ga_instance):
     # print(f"Change     = {ga_instance.best_solution(pop_fitness=ga_instance.last_generation_fitness)[1] - last_fitness}")
     print(f"Solution {ga_instance.generations_completed} : {ga_instance.best_solution(pop_fitness=ga_instance.last_generation_fitness)[0]} - Fitness : {ga_instance.best_solution(pop_fitness=ga_instance.last_generation_fitness)[1]} - Change : {ga_instance.best_solution(pop_fitness=ga_instance.last_generation_fitness)[1] - last_fitness}")
     last_fitness = ga_instance.best_solution(pop_fitness=ga_instance.last_generation_fitness)[1]
-    
-def ln_coeffs_to_coeffs(ln_coeffs):
-    coeffs = [np.sign(c)*(np.exp(abs(c))-1) for c in ln_coeffs]
-    return coeffs
-    
 
 def run_ga(data,
            advertisers,
@@ -411,13 +501,11 @@ def run_ga(data,
 
     def run_auction_set_fitness(ga_instance, tau_coeffs, solution_idx):
         w_coll = []
-        # convert tau_coeffs from ln to exp
-        coeffs = ln_coeffs_to_coeffs(tau_coeffs)
 
-        tested_functions.append(coeffs)
+        tested_functions.append(tau_coeffs)
             
         for advertiser_set in advertisers:
-                _, w_coll_i = run_auction(advertiser_set, coeffs, k)
+                _, w_coll_i = run_auction(advertiser_set, tau_coeffs, k)
                 w_coll.append(w_coll_i)
                 
         w_coll_objective = [auction_objective(w) for w in w_coll]
@@ -448,7 +536,6 @@ def run_ga(data,
         crossover_type='single_point',
         on_generation=None,
         random_seed=random_seed,
-        parallel_processing=10
     )
 
     # save start time
@@ -461,8 +548,7 @@ def run_ga(data,
     
     # ga_instance.plot_fitness()
     best_solution, best_fitness, _ = ga_instance.best_solution()
-    best_tau_coeffs_ln = best_solution
-    best_tau_coeffs = ln_coeffs_to_coeffs(best_tau_coeffs_ln)
+    best_tau_coeffs = best_solution
     polynomial_string = ' + '.join([f'{c:.6f}*x^{i}' if i != 0 else f'{c:.6f}' for i, c in enumerate(best_tau_coeffs)])
     print(f"Best line found: y = {polynomial_string}")
     # print("Fitness:", best_fitness)
@@ -481,9 +567,7 @@ def run_ga(data,
             'individual_welfares': best_individual_welfares,
             'tested_functions': tested_functions,
         }
-    print_stats(auction_output)
-    # plot_auctions(auction_output)
-    # plot_advertisers(auction_output)
+    # print_stats(auction_output)
     return ga_instance, auction_output
 
 if __name__ == "__main__":

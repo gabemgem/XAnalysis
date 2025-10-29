@@ -4,20 +4,20 @@
 # qsub cluster_run.sh data/a_single_modal_normal_distribution.csv 1
 
 # job submission directives
-#$ -P css-ww
+#$ -P attestia
 #$ -N auction-optimization
 #$ -M gmaayan@bu.edu
 #$ -m ea
-#$ -o logs/output.log
-#$ -e logs/output.err
+#$ -o output/logs/output.log
+#$ -e output/logs/output.err
 
 # Submit an array job with 10 tasks
-#$ -t 1-21
+#$ -t 1-7
 
 # multiple slots for shared memory applications
-#$ -pe omp 4
+#$ -pe omp 1
 
-filename=$(echo $1 | cut -d "/" -f 2)
+filename=$(basename "$1")
 
 datatag="${filename:0:1}"
 
