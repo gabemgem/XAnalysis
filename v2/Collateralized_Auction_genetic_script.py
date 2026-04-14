@@ -192,7 +192,7 @@ def main(args):
         k = rng.integers(1, int(num_items*0.1))
 
     # normalize v and e to [-1, 1]
-    scaler = NegOneOneScaler()
+    scaler = NegOneOneScaler(joint=True)
     scaler.fit(data[['v', 'e']])
     data_n = scaler.transform(data[['v', 'e']])
 
@@ -463,12 +463,12 @@ def compile_results(externality_cost_per_impression,
         'polynomial_degree': polynomial_degree,
         'tau': tau_coeffs,
         'advertisers': advertisers,
-        'w_vcg_adv': np.mean(w_vcg_ad),
-        'w_coll_adv': np.mean(w_coll_ad),
-        'w_vcg_ext': np.mean(w_vcg_ex),
-        'w_coll_ext': np.mean(w_coll_ex),
-        'w_vcg_tot': np.mean([ad+ex for ad, ex in zip(w_vcg_ad, w_vcg_ex)]),
-        'w_coll_tot': np.mean([ad+ex for ad, ex in zip(w_coll_ad, w_coll_ex)]),
+        'w_vcg_adv': w_vcg_ad,
+        'w_coll_adv': w_coll_ad,
+        'w_vcg_ext': w_vcg_ex,
+        'w_coll_ext': w_coll_ex,
+        'w_vcg_tot': [ad+ex for ad, ex in zip(w_vcg_ad, w_vcg_ex)],
+        'w_coll_tot': [ad+ex for ad, ex in zip(w_coll_ad, w_coll_ex)],
         'tested_functions': auction_output['tested_functions'],
     }
     return result
