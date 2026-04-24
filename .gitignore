@@ -2,3 +2,17 @@
 data/
 
 .idea/
+
+*.aux
+
+*.fdb_latexmk
+
+*.fls
+
+*.log
+
+*.pkl
+
+*.out
+
+*.gz
