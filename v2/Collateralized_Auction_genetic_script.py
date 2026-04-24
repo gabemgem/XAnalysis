@@ -191,10 +191,20 @@ def main(args):
     if random_k:
         k = rng.integers(1, int(num_items*0.1))
 
-    # normalize v and e to [-1, 1]
-    scaler = NegOneOneScaler(joint=True)
+    # normalize v and e to [-1, 1] independently so the e dimension has full
+    # range in the search space regardless of externality_cost magnitude.
+    # joint=True compresses e to near 0 when externality_cost << action_cost.
+    scaler = NegOneOneScaler(joint=False)
     scaler.fit(data[['v', 'e']])
     data_n = scaler.transform(data[['v', 'e']])
+
+    # With joint=False, v and e are each mapped to [-1, 1] using their own ranges.
+    # To keep the fitness function equivalent to optimizing the original (v + e)
+    # welfare, weight the normalized e component by (R_e / R_v) so that the
+    # relative scale — which encodes externality_cost — is preserved.
+    R_v = float(data['v'].max() - data['v'].min())
+    R_e = float(data['e'].max() - data['e'].min())
+    ext_scaler_n = R_e / R_v
 
     all_advertisers = [ad_distribution(data, data_n, num_items, rng) for _ in range(num_auctions)]
     advertisers_original, advertisers = zip(*all_advertisers)
@@ -221,6 +231,7 @@ def main(args):
         polynomial_degree=polynomial_degree,
         initial_genes=initial_genes,
         num_generations=num_generations,
+        ext_scaler=ext_scaler_n,
     )
 
     result = compile_results(
@@ -348,7 +359,7 @@ def ad_distribution(data, data_n, num_advertisers, rng):
 
     return (advertisers, advertisers_n)
 
-def auction_objective(w_results, ad_scaler=1, ext_scaler=1):
+def auction_objective(w_results, ad_scaler=1.0, ext_scaler=1.0):
     return (w_results[0]*ad_scaler)+(w_results[1]*ext_scaler)
 
 def tau(externality, coeffs):
@@ -493,7 +504,8 @@ def run_ga(data,
            k=1,
            polynomial_degree=1,
            initial_genes=None,
-           num_generations=600
+           num_generations=600,
+           ext_scaler=1.0,
            ):
     externality_cost = externality_cost_per_impression
     tested_functions = []
@@ -503,15 +515,15 @@ def run_ga(data,
         w_coll = []
 
         tested_functions.append(tau_coeffs)
-            
+
         for advertiser_set in advertisers:
                 _, w_coll_i = run_auction(advertiser_set, tau_coeffs, k)
                 w_coll.append(w_coll_i)
-                
-        w_coll_objective = [auction_objective(w) for w in w_coll]
-        
+
+        w_coll_objective = [auction_objective(w, ext_scaler=ext_scaler) for w in w_coll]
+
         avg_coll_objective = np.mean(w_coll_objective)
-        
+
         return avg_coll_objective
 
     initial_population = None
