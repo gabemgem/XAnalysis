@@ -1,0 +1,306 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{float}
+\floatstyle{ruled}
+\newfloat{algorithm}{H}{loa}
+\floatname{algorithm}{Algorithm}
+\usepackage{hyperref}
+\geometry{margin=1in}
+
+\newcommand{\tv}{\tilde{v}}
+\newcommand{\te}{\tilde{e}}
+\newcommand{\bsbeta}{\boldsymbol{\beta}}
+
+\title{Finding the Optimal Tau Function via Grid Search}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+The goal is to find a polynomial threshold function
+$\tau : \mathbb{R} \to \mathbb{R}$
+such that running the collateralized auction with threshold $\tau$
+maximizes expected social welfare relative to the VCG benchmark.
+An advertiser with value--externality pair $(v, e)$
+is admitted to the collateralized auction only if $v \geq \tau(e)$.
+
+We search over the coefficients of $\tau$ exhaustively on a finite grid,
+evaluating every candidate against a shared set of simulated auction draws.
+The entire evaluation is performed in a normalized coordinate system
+in which both dimensions span $[-1, 1]$,
+and the best coefficients are then converted back to original units.
+
+\section{Data Preparation}
+
+\subsection{Cost Scaling}
+
+Starting from the raw scores $v_t^{\text{score}}$ (actions per month) and
+$e_t^{\text{score}}$ (normalized externality per month) described in
+\texttt{value\_externality\_definitions.tex}, the advertiser value and
+externality are obtained by applying cost parameters:
+\begin{equation}
+    v_t = \zeta_v \cdot v_t^{\text{score}}, \qquad
+    e_t = \zeta_e \cdot e_t^{\text{score}},
+    \label{eq:cost_scaling}
+\end{equation}
+where $\zeta_v$ (\texttt{action\_cost}, default 1.0) and
+$\zeta_e$ (\texttt{externality\_cost}) are free parameters.
+
+\subsection{Independent Normalization}
+
+Each column is mapped to $[-1, 1]$ independently using its own minimum and maximum.
+Let $v_{\min}, v_{\max}$ and $e_{\min}, e_{\max}$ denote the column-wise extrema
+over the full dataset. Define the range of each column:
+\begin{equation}
+    R_v = v_{\max} - v_{\min}, \qquad R_e = e_{\max} - e_{\min}.
+\end{equation}
+The normalized values are:
+\begin{equation}
+    \tv_t = \frac{2(v_t - v_{\min})}{R_v} - 1 \in [-1,1], \qquad
+    \te_t = \frac{2(e_t - e_{\min})}{R_e} - 1 \in [-1,1].
+    \label{eq:normalization}
+\end{equation}
+Joint normalization (a single shared min/max across both columns) is
+deliberately avoided: when $\zeta_e \ll \zeta_v$, the $e$ values are far
+smaller in magnitude than $v$, so a joint scale would compress $\te$ to
+near zero and leave the search unable to exploit the externality dimension.
+Independent normalization ensures both dimensions always span the full $[-1,1]$
+range regardless of the cost parameters.
+
+\subsection{Welfare Objective Equivalence}
+
+Because $v$ and $e$ are normalized with different scales, a fitness function
+that sums $\tv + \te$ would give each dimension equal weight in normalized
+space, which does not reflect their relative magnitudes in original units.
+To recover the correct relative weighting, we use a scaled objective.
+
+The original welfare of a set $\mathcal{W}$ of winning advertisers is
+\begin{equation}
+    W(\mathcal{W}) = \sum_{i \in \mathcal{W}} v_i + \sum_{i \in \mathcal{W}} e_i.
+    \label{eq:original_welfare}
+\end{equation}
+Substituting the inverse of \eqref{eq:normalization},
+$v_i = \tv_i \cdot R_v/2 + (v_{\min}+v_{\max})/2$
+and analogously for $e_i$, and dropping additive constants
+that do not affect the argmax, the equivalent normalized objective is
+\begin{equation}
+    F_{\text{norm}}(\mathcal{W})
+    = \sum_{i \in \mathcal{W}} \tv_i
+    + \underbrace{\frac{R_e}{R_v}}_{\lambda} \sum_{i \in \mathcal{W}} \te_i.
+    \label{eq:scaled_welfare}
+\end{equation}
+The scale factor $\lambda = R_e/R_v$ preserves the relative importance of
+the two dimensions. Since $R_e = \zeta_e \cdot (e_{\max}^{\text{score}} - e_{\min}^{\text{score}})$
+and $R_v = \zeta_v \cdot (v_{\max}^{\text{score}} - v_{\min}^{\text{score}})$,
+$\lambda$ encodes the externality cost parameter $\zeta_e$ together with
+the natural scale difference between action and externality scores.
+Maximizing \eqref{eq:scaled_welfare} in normalized space is equivalent to
+maximizing \eqref{eq:original_welfare} in original space.
+
+\section{Advertiser Sampling}
+
+For each of $K$ simulated auctions, $n$ tweets are drawn without replacement
+from the full dataset using a fixed random seed. Each sampled tweet $i$
+yields two advertiser pairs: the original-space pair $(v_i, e_i)$ and the
+normalized pair $(\tv_i, \te_i)$. Denote the normalized auction draws as
+$\mathcal{A} = \bigl\{ A^{(j)} \bigr\}_{j=1}^{K}$,
+where each $A^{(j)} = \bigl\{(\tv_i^{(j)}, \te_i^{(j)})\bigr\}_{i=1}^{n}$.
+The search is conducted entirely with the normalized pairs.
+
+\section{Grid Construction}
+
+We search over degree-$d$ polynomials of the form
+\begin{equation}
+    \tau(\te;\,\bsbeta) = \sum_{p=0}^{d} \beta_p\, \te^{\,p},
+    \qquad \bsbeta = (\beta_0, \ldots, \beta_d) \in \mathbb{R}^{d+1}.
+\end{equation}
+A discrete grid is constructed by taking the Cartesian product of
+one-dimensional ranges for each coefficient:
+\begin{align}
+    \beta_0 &\in \mathcal{B}_0 = \text{linspace}(-2,\; 2,\; M), \\
+    \beta_p &\in \mathcal{B} = \text{linspace}(-5,\; 5,\; M), \quad p = 1, \ldots, d,
+\end{align}
+where $M$ is the number of grid points per dimension (\texttt{num\_points}, default 20).
+The intercept range $[-2, 2]$ covers the scale of $\tilde{v} \in [-1,1]$.
+The slope range $[-5, 5]$ covers meaningful separations: with $\te \in [-1,1]$,
+a coefficient $|\beta_p| = 5$ shifts $\tau$ by at most 5 across the full
+externality range, which is large relative to the data scale.
+
+The full grid is the Cartesian product
+\begin{equation}
+    \mathcal{G} = \mathcal{B}_0 \times \mathcal{B}^d,
+    \qquad |\mathcal{G}| = G = M^{d+1}.
+\end{equation}
+It is stored as a matrix $\mathbf{B} \in \mathbb{R}^{G \times (d+1)}$
+where row $g$ is the coefficient vector $\bsbeta^{(g)}$.
+
+\section{Vectorized Welfare Evaluation}
+
+\subsection{Single Auction Draw}
+
+For a single auction draw $A^{(j)}$ with $n$ advertisers, define
+\begin{equation}
+    \mathbf{v} = \bigl(v_1,\ldots,v_n\bigr)^{\!\top} \in \mathbb{R}^n, \qquad
+    \mathbf{e} = \bigl(e_1,\ldots,e_n\bigr)^{\!\top} \in \mathbb{R}^n,
+\end{equation}
+(dropping the superscript $j$ for clarity and writing $v, e$ for
+$\tilde{v}, \tilde{e}$ within this section).
+Construct the Vandermonde-style matrix of externality powers:
+\begin{equation}
+    \mathbf{E} \in \mathbb{R}^{n \times (d+1)}, \qquad
+    E_{ip} = e_i^{\,p}, \quad i = 1,\ldots,n,\; p = 0,\ldots,d.
+\end{equation}
+
+\paragraph{Step 1: Evaluate $\tau$ for all grid points and all advertisers.}
+\begin{equation}
+    \mathbf{T} = \mathbf{B}\,\mathbf{E}^{\!\top} \in \mathbb{R}^{G \times n},
+    \qquad T_{gi} = \tau(e_i;\,\bsbeta^{(g)}).
+    \label{eq:tau_matrix}
+\end{equation}
+This is a single dense matrix multiply that computes $\tau(e_i)$ for every
+grid point $g$ and every advertiser $i$ simultaneously.
+
+\paragraph{Step 2: Determine admission.}
+\begin{equation}
+    \mathbf{A} \in \{0,1\}^{G \times n}, \qquad
+    A_{gi} = \mathbf{1}[v_i \geq T_{gi}].
+    \label{eq:admission}
+\end{equation}
+
+\paragraph{Step 3: Select top-$k$ admitted winners.}
+Sort the $n$ advertisers by value descending:
+let $\sigma$ be the permutation with $v_{\sigma(1)} \geq \cdots \geq v_{\sigma(n)}$.
+Define the reordered matrices:
+\begin{equation}
+    \mathbf{v}^{\sigma} = (v_{\sigma(1)},\ldots,v_{\sigma(n)})^{\!\top},\quad
+    \mathbf{e}^{\sigma} = (e_{\sigma(1)},\ldots,e_{\sigma(n)})^{\!\top},\quad
+    \mathbf{A}^{\sigma}_{g,j} = A_{g,\sigma(j)}.
+\end{equation}
+Because advertisers are now in descending-$v$ order, the top-$k$ admitted
+winners under grid point $g$ are exactly the first $k$ positions $j$ for
+which $\mathbf{A}^{\sigma}_{g,j} = 1$.
+This is identified via the cumulative admission count:
+\begin{equation}
+    C_{g,j} = \sum_{j'=1}^{j} A^{\sigma}_{g,j'}, \qquad
+    \text{(number of admitted advertisers in positions } 1, \ldots, j\text{)}.
+\end{equation}
+The winner mask is:
+\begin{equation}
+    \mathbf{M} \in \{0,1\}^{G \times n}, \qquad
+    M_{g,j} = \mathbf{1}[C_{g,j} \leq k]\cdot A^{\sigma}_{g,j}.
+    \label{eq:winner_mask}
+\end{equation}
+Position $j$ is a winner under grid point $g$ if and only if it is admitted
+\emph{and} is among the first $k$ admitted positions in the sorted order.
+
+\paragraph{Step 4: Compute welfare.}
+\begin{equation}
+    \mathbf{w}^{(j)} = \mathbf{M}\,\mathbf{v}^{\sigma}
+                     + \lambda\,\bigl(\mathbf{M}\,\mathbf{e}^{\sigma}\bigr)
+                     \in \mathbb{R}^{G},
+    \label{eq:auction_welfare}
+\end{equation}
+where $\lambda = R_e / R_v$ is the externality scale factor from
+\eqref{eq:scaled_welfare} and the matrix--vector products
+$\mathbf{M}\mathbf{v}^{\sigma}$ and $\mathbf{M}\mathbf{e}^{\sigma}$
+sum the value and externality of the winners for each of the $G$ grid points.
+
+\subsection{Averaging over Auction Draws}
+
+Steps 1--4 are repeated for each of the $K$ auction draws.
+The mean collateralized welfare over all draws is:
+\begin{equation}
+    \bar{\mathbf{w}} = \frac{1}{K} \sum_{j=1}^{K} \mathbf{w}^{(j)} \in \mathbb{R}^{G}.
+    \label{eq:mean_welfare}
+\end{equation}
+In practice, $\bar{\mathbf{w}}$ is accumulated by adding $\mathbf{w}^{(j)}$
+to a running sum and dividing by $K$ at the end, requiring only $O(G)$
+additional memory regardless of $K$.
+
+\section{Best Coefficient Selection}
+
+The optimal grid point is:
+\begin{equation}
+    g^* = \operatorname*{argmax}_{g \in \{1,\ldots,G\}} \bar{w}_g,
+    \qquad
+    \bsbeta^* = \bsbeta^{(g^*)} \in \mathbb{R}^{d+1}.
+    \label{eq:argmax}
+\end{equation}
+The coefficients $\bsbeta^*$ are the optimal tau coefficients in
+normalized $(\te, \tilde{v})$ space.
+
+\section{Coefficient Recovery in Original Space}
+
+The stored result and all plots use the tau function in original $(e, v)$ space.
+Since the normalization \eqref{eq:normalization} is an affine transform, the
+polynomial $\tau(\te;\bsbeta^*)$ in normalized space corresponds to a polynomial
+$\tau^*(e;\boldsymbol{\alpha}^*)$ in original space, found by substituting
+$\te = \alpha_e e + \beta_e$ and $\tilde{v} = \alpha_v v + \beta_v$ where
+\begin{equation}
+    \alpha_e = \frac{2}{R_e}, \quad \beta_e = -1 - \alpha_e e_{\min}, \qquad
+    \alpha_v = \frac{2}{R_v}, \quad \beta_v = -1 - \alpha_v v_{\min}.
+\end{equation}
+Given $\tilde{v} = \tau(\te;\bsbeta^*)$, we solve for $v$:
+\begin{equation}
+    v = \frac{\tau(\alpha_e e + \beta_e;\;\bsbeta^*) - \beta_v}{\alpha_v}
+      = \tau^*(e;\,\boldsymbol{\alpha}^*).
+    \label{eq:recovery}
+\end{equation}
+The polynomial composition $p(\alpha_e x + \beta_e)$ is computed exactly
+via Horner's rule, and the affine scaling by $1/\alpha_v$ and shift by
+$-\beta_v/\alpha_v$ produce $\boldsymbol{\alpha}^*$ as a plain vector of
+coefficients in increasing-power order.
+The result satisfies:
+for all $(e, v)$ in original space,
+$v \geq \tau^*(e;\boldsymbol{\alpha}^*)$ if and only if
+$\tv \geq \tau(\te;\bsbeta^*)$.
+
+\section{Algorithm Summary}
+
+\begin{algorithm}[H]
+\caption{Grid Search for Optimal Tau}
+\noindent\textbf{Require:} Dataset $\{(v_t^{\text{score}}, e_t^{\text{score}})\}$, cost parameters
+$\zeta_v, \zeta_e$, degree $d$, grid size $M$, slots $k$, draws $K$,
+items per draw $n$, random seed
+\begin{description}
+\setlength{\itemsep}{1pt}\setlength{\parsep}{0pt}
+\item[\normalfont 1:]  $v_t \gets \zeta_v v_t^{\text{score}}$;\quad $e_t \gets \zeta_e e_t^{\text{score}}$
+\item[\normalfont 2:]  Fit independent scaler; compute $\tilde{v}_t, \tilde{e}_t$ via \eqref{eq:normalization}
+\item[\normalfont 3:]  $\lambda \gets R_e / R_v$
+\item[\normalfont 4:]  Sample $K$ draws $\mathcal{A} = \{A^{(j)}\}$ of $n$ normalized pairs each
+\item[\normalfont 5:]  Build grid $\mathbf{B} \in \mathbb{R}^{G \times (d+1)}$,\quad $G = M^{d+1}$
+\item[\normalfont 6:]  $\bar{\mathbf{w}} \gets \mathbf{0}_G$
+\item[\normalfont 7:]  \textbf{for} $j = 1$ \textbf{to} $K$ \textbf{do}
+\item[\normalfont 8:]  \hspace{1.5em}$\mathbf{E} \gets$ Vandermonde matrix of $e$-powers for $A^{(j)}$ \hfill \eqref{eq:tau_matrix}
+\item[\normalfont 9:]  \hspace{1.5em}$\mathbf{T} \gets \mathbf{B}\,\mathbf{E}^\top$ \hfill (evaluate $\tau$ for all $g$, $i$)
+\item[\normalfont 10:] \hspace{1.5em}$\mathbf{A} \gets [v_i \geq T_{gi}]$ \hfill \eqref{eq:admission}
+\item[\normalfont 11:] \hspace{1.5em}Sort advertisers by $v$ descending; compute winner mask $\mathbf{M}$ \hfill \eqref{eq:winner_mask}
+\item[\normalfont 12:] \hspace{1.5em}$\bar{\mathbf{w}} \gets \bar{\mathbf{w}} + \mathbf{M}\mathbf{v}^\sigma + \lambda\,\mathbf{M}\mathbf{e}^\sigma$ \hfill \eqref{eq:auction_welfare}
+\item[\normalfont 13:] \textbf{end for}
+\item[\normalfont 14:] $\bar{\mathbf{w}} \gets \bar{\mathbf{w}} / K$
+\item[\normalfont 15:] $g^* \gets \operatorname{argmax}_g\, \bar{w}_g$;\quad $\bsbeta^* \gets \mathbf{B}_{g^*}$ \hfill \eqref{eq:argmax}
+\item[\normalfont 16:] $\boldsymbol{\alpha}^* \gets \texttt{poly\_from\_normalized}(\bsbeta^*, e, v)$ \hfill \eqref{eq:recovery}
+\item[\normalfont 17:] \textbf{return} $\boldsymbol{\alpha}^*$
+\end{description}
+\end{algorithm}
+
+\section{Complexity}
+
+The dominant cost per auction draw is the matrix multiply in step~8,
+which costs $O(G \cdot n \cdot (d+1))$ floating-point operations.
+The total cost over all draws is $O(K \cdot G \cdot n \cdot (d+1))$.
+For the default parameters ($K = 500$, $n = 20$, $d = 1$, $M = 20$,
+$G = 400$) this is approximately $8 \times 10^6$ operations,
+well within the range of a single-threaded NumPy call.
+For $d = 3$, $M = 20$ ($G = 160{,}000$) the count rises to
+$\sim\!3.2 \times 10^9$, at which point the vectorized matrix
+operations benefit noticeably from multi-threaded BLAS.
+The memory requirement per draw is $O(G \cdot n)$ for
+$\mathbf{T}$, $\mathbf{A}$, and $\mathbf{M}$, plus $O(G)$
+for the running welfare sum $\bar{\mathbf{w}}$.
+
+\end{document}
