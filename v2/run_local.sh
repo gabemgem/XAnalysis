@@ -6,7 +6,10 @@ set -e
 DATA_TERM=""
 POLY_DEGREES=(1 2 3)
 USE_GENETIC=false
+USE_SGD=false
 NUM_POINTS=20
+NUM_RESTARTS=5
+EXTERNALITY_COST=0.01
 TAG="test"
 
 usage() {
@@ -22,14 +25,17 @@ Options:
                              Default: all CSV files in data/samples/
   --polynomial-degree <deg>  Run only this degree instead of all three (1, 2, 3)
   --genetic                  Use genetic algorithm instead of grid search
-  --num-points <n>           Grid points per coefficient dimension (default: 20)
+  --sgd                      Use SGD optimizer instead of grid search
+  --num-points <n>           Grid points per coefficient dimension (default: 20, grid search only)
                              Grid size = n^(degree+1); reduce for higher degrees
+  --num-restarts <n>         SGD restarts sweeping intercept across v range (default: 5, SGD only)
+  --externality-cost <c>     Externality cost parameter (default: 0.01)
   --tag <tag>                Label appended to run ID: <file-prefix>_<degree>_<tag>
                              (default: test)
   --help                     Show this message and exit
 
 Fixed parameters (edit script to change):
-  --k 1  --externality-cost 0.01  --seed 1234
+  --k 1  --seed 1234
 
 Examples:
   $(basename "$0")
@@ -45,8 +51,11 @@ while [[ $# -gt 0 ]]; do
         --data)             DATA_TERM="$2";       shift 2 ;;
         --polynomial-degree) POLY_DEGREES=("$2"); shift 2 ;;
         --genetic)          USE_GENETIC=true;     shift   ;;
+        --sgd)              USE_SGD=true;         shift   ;;
         --num-points)       NUM_POINTS="$2";      shift 2 ;;
-        --tag)              TAG="$2";             shift 2 ;;
+        --num-restarts)     NUM_RESTARTS="$2";       shift 2 ;;
+        --externality-cost) EXTERNALITY_COST="$2";  shift 2 ;;
+        --tag)              TAG="$2";               shift 2 ;;
         --help)             usage ;;
         *) echo "Unknown argument: $1"; echo "Run $(basename "$0") --help for usage."; exit 1 ;;
     esac
@@ -82,15 +91,24 @@ for file in "${files[@]}"; do
             python Collateralized_Auction_genetic_script.py \
                 --data "$file" \
                 --k 1 \
-                --externality-cost 0.01 \
+                --externality-cost "$EXTERNALITY_COST" \
                 --polynomial-degree "$poly" \
                 --seed 1234 \
+                --id "$id"
+        elif $USE_SGD; then
+            python Collateralized_Auction_sgd.py \
+                --data "$file" \
+                --k 1 \
+                --externality-cost "$EXTERNALITY_COST" \
+                --polynomial-degree "$poly" \
+                --seed 1234 \
+                --num-restarts "$NUM_RESTARTS" \
                 --id "$id"
         else
             python Collateralized_Auction_grid_search.py \
                 --data "$file" \
                 --k 1 \
-                --externality-cost 0.01 \
+                --externality-cost "$EXTERNALITY_COST" \
                 --polynomial-degree "$poly" \
                 --seed 1234 \
                 --num-points "$NUM_POINTS" \
