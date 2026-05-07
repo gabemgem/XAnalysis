@@ -180,6 +180,144 @@ def run_auction_set(tau_coeffs, advertisers, k=1):
     )
 
 
+def _soft_welfare_and_grad(beta, advertiser_set, k, ext_scaler, temperature):
+    """Differentiable expected welfare and its gradient w.r.t. beta.
+
+    Replaces the hard admission indicator 1[v >= tau(e; beta)] with
+    sigmoid((v - tau) / temperature), making welfare differentiable.
+
+    For k=1, uses the exact formula
+        P(i wins) = sigma_i * prod_{j: v_j > v_i} (1 - sigma_j)
+    with an analytic gradient via the exclusive-prefix-product identity.
+    For k>1, differentiates a soft top-k gate through numerical differences.
+    """
+    v = np.array([a[0] for a in advertiser_set])
+    e = np.array([a[1] for a in advertiser_set])
+    d = len(beta)
+
+    e_pow = np.column_stack([e**p for p in range(d)])  # (n, d)
+    x = np.clip((v - e_pow @ beta) / temperature, -50, 50)
+    sig = 1.0 / (1.0 + np.exp(-x))                    # (n,)
+    w = v + ext_scaler * e
+
+    # Sort descending by v so top-k selection is a prefix
+    order = np.argsort(-v)
+    sig_s, w_s, e_pow_s = sig[order], w[order], e_pow[order]
+    n = len(sig_s)
+
+    # Exclusive prefix product: excprod[i] = prod_{j<i}(1 - sig_s[j])
+    one_minus = np.maximum(1.0 - sig_s, 1e-10)
+    excprod = np.cumprod(np.concatenate([[1.0], one_minus[:-1]]))
+
+    if k == 1:
+        p_win = sig_s * excprod
+    else:
+        # Soft top-k gate: sigmoid smoothly cuts off once k slots are filled
+        cumadmit = np.concatenate([[0.0], np.cumsum(sig_s[:-1])])  # exclusive
+        gate = 1.0 / (1.0 + np.exp(np.clip((cumadmit + 0.5 - k) / temperature, -50, 50)))
+        p_win = sig_s * gate
+
+    W = float(np.dot(p_win, w_s))
+
+    if k == 1:
+        # Analytic gradient using the exclusive-prefix-sum identity.
+        # dσ_i/dβ = -σ_i(1-σ_i)/T · e_pow_i
+        # h_j = dσ_j/dβ / (1-σ_j) = -σ_j/T · e_pow_j
+        # cumsigE[i] = Σ_{j<i} σ_j · e_pow_j   (exclusive prefix sum)
+        # term[i] = σ_i/T · (cumsigE[i] - (1-σ_i)·e_pow_i)
+        # grad = Σ_i w_i · excprod[i] · term[i]
+        cumsigE = np.vstack([
+            np.zeros((1, d)),
+            np.cumsum(sig_s[:, None] * e_pow_s, axis=0)[:-1],
+        ])
+        term = sig_s[:, None] / temperature * (cumsigE - (1.0 - sig_s[:, None]) * e_pow_s)
+        grad = (w_s[:, None] * excprod[:, None] * term).sum(axis=0)
+    else:
+        # Numerical gradient for k > 1 (only 2-4 dimensions, cheap)
+        eps_fd = 1e-4
+        grad = np.zeros(d)
+        for ki in range(d):
+            delta = np.zeros(d)
+            delta[ki] = eps_fd
+
+            def _soft_w(b, _v=v, _ep=e_pow, _ws=w_s, _ord=order):
+                xb = np.clip((_v - _ep @ b) / temperature, -50, 50)
+                sb = (1.0 / (1.0 + np.exp(-xb)))[_ord]
+                ca = np.concatenate([[0.0], np.cumsum(sb[:-1])])
+                gt = 1.0 / (1.0 + np.exp(np.clip((ca + 0.5 - k) / temperature, -50, 50)))
+                return float(np.dot(sb * gt, _ws))
+
+            grad[ki] = (_soft_w(beta + delta) - _soft_w(beta - delta)) / (2 * eps_fd)
+
+    return W, grad
+
+
+def run_sgd_search(advertisers, polynomial_degree, k=1, ext_scaler=1.0,
+                   num_iterations=500, batch_size=50, lr=0.02,
+                   temperature=0.1, seed=None):
+    """
+    Adam optimizer on a sigmoid-smoothed welfare objective.
+
+    Useful when the coefficient space is too large for exhaustive grid search
+    (higher polynomial degrees or finer resolution than num_points allows).
+    Returns best coefficients in the same format as run_grid_search, with
+    the final welfare evaluated on the exact (hard-threshold) objective.
+
+    Parameters
+    ----------
+    temperature : float
+        Sigmoid sharpness. Smaller = closer to the hard threshold but noisier
+        gradients. Default 0.1 works well for [-1, 1] normalized inputs.
+    """
+    rng = np.random.default_rng(seed)
+    d = polynomial_degree + 1
+    beta = np.zeros(d)          # start at zero (admit everyone)
+    m_adam = np.zeros(d)
+    v_adam = np.zeros(d)
+    b1, b2, eps_adam = 0.9, 0.999, 1e-8
+
+    N = len(advertisers)
+    best_beta, best_soft_w = beta.copy(), -np.inf
+
+    print(f"SGD search: {polynomial_degree+1} coefficients, "
+          f"{num_iterations} iterations × batch {batch_size}")
+    start_time = time.time()
+
+    for t in range(1, num_iterations + 1):
+        idx = rng.choice(N, size=min(batch_size, N), replace=False)
+        batch = [advertisers[i] for i in idx]
+
+        total_W, total_grad = 0.0, np.zeros(d)
+        for ads in batch:
+            W_i, g_i = _soft_welfare_and_grad(beta, ads, k, ext_scaler, temperature)
+            total_W += W_i
+            total_grad += g_i
+        total_W /= len(batch)
+        total_grad /= len(batch)
+
+        if total_W > best_soft_w:
+            best_soft_w = total_W
+            best_beta = beta.copy()
+
+        # Adam gradient ascent
+        m_adam = b1 * m_adam + (1 - b1) * total_grad
+        v_adam = b2 * v_adam + (1 - b2) * total_grad**2
+        m_hat = m_adam / (1 - b1**t)
+        v_hat = v_adam / (1 - b2**t)
+        beta = beta + lr * m_hat / (np.sqrt(v_hat) + eps_adam)
+
+    elapsed = time.time() - start_time
+    print(f"SGD complete in {elapsed:.1f}s")
+
+    # Re-evaluate best_beta on the exact hard-threshold objective
+    final_grid = np.array([best_beta])
+    exact_w = float(np.mean([
+        _eval_grid_on_auction(final_grid, ads, k, ext_scaler)[0]
+        for ads in advertisers
+    ]))
+    return best_beta.tolist(), exact_w, []
+
+
 def _eval_grid_on_auction(grid, advertiser_set, k, ext_scaler):
     """Vectorized welfare for every grid coefficient vector on one auction draw.
 
@@ -376,13 +514,22 @@ def main(args):
     all_advertisers = [ad_distribution(data, data_n, num_items, rng) for _ in range(num_auctions)]
     advertisers_original, advertisers = zip(*all_advertisers)
 
-    best_coeffs_n, best_welfare, all_results = run_grid_search(
-        advertisers=advertisers,
-        polynomial_degree=polynomial_degree,
-        k=k,
-        num_points=num_points,
-        ext_scaler=ext_scaler_n,
-    )
+    if args.get('use_sgd', False):
+        best_coeffs_n, best_welfare, all_results = run_sgd_search(
+            advertisers=advertisers,
+            polynomial_degree=polynomial_degree,
+            k=k,
+            ext_scaler=ext_scaler_n,
+            seed=random_seed,
+        )
+    else:
+        best_coeffs_n, best_welfare, all_results = run_grid_search(
+            advertisers=advertisers,
+            polynomial_degree=polynomial_degree,
+            k=k,
+            num_points=num_points,
+            ext_scaler=ext_scaler_n,
+        )
 
     polynomial_string = ' + '.join(
         [f'{c:.6f}' if i == 0 else f'{c:.6f}*x^{i}' for i, c in enumerate(best_coeffs_n)]
@@ -433,7 +580,8 @@ def print_usage():
     print("  --seed INT                 Optional. Random seed.")
     print("  --num-items INT            Optional. Advertisers per auction. Defaults to 20.")
     print("  --num-auctions INT         Optional. Number of auctions. Defaults to 500.")
-    print("  --num-points INT           Optional. Grid points per dimension. Defaults to 20.")
+    print("  --num-points INT           Optional. Grid points per dimension (grid search only). Defaults to 20.")
+    print("  --sgd                      Optional. Use SGD optimizer instead of grid search.")
     print("  --n-jobs INT               Optional. Parallel workers (-1 = all cores). Defaults to -1.")
     print("  --random-number-of-items   Optional flag.")
     print("  --random-k                 Optional flag.")
@@ -446,6 +594,7 @@ def parse_args(argv):
     args = {
         'random_number_of_items': False,
         'random_k': False,
+        'use_sgd': False,
         'action_cost': 1.0,
         'num_items': 20,
         'num_auctions': 500,
@@ -484,6 +633,8 @@ def parse_args(argv):
             args['random_number_of_items'] = True
         elif arg == '--random-k':
             args['random_k'] = True
+        elif arg == '--sgd':
+            args['use_sgd'] = True
         elif arg == '--id':
             i += 1; args['id'] = str(argv[i])
         elif arg == '--scc-it':
