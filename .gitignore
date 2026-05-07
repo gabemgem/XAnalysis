@@ -16,3 +16,4 @@ data/
 *.out
 
 *.gz
+*.pyc
