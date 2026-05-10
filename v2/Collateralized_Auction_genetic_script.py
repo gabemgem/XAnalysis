@@ -465,6 +465,13 @@ def compile_results(externality_cost_per_impression,
     w_vcg_ex = [e for e in best_individual_welfares['vcg_ex']]
     w_coll_ex = [e for e in best_individual_welfares['coll_ex']]
 
+    tested_fns_orig = []
+    for fn in auction_output['tested_functions']:
+        try:
+            tested_fns_orig.append(scaler.poly_from_normalized(list(fn), x_col='e', y_col='v'))
+        except (ValueError, RuntimeError):
+            pass
+
     result = {
         'externality_cost_per_impression': externality_cost_per_impression,
         'num_advertisers': num_advertisers,
@@ -480,7 +487,7 @@ def compile_results(externality_cost_per_impression,
         'w_coll_ext': w_coll_ex,
         'w_vcg_tot': [ad+ex for ad, ex in zip(w_vcg_ad, w_vcg_ex)],
         'w_coll_tot': [ad+ex for ad, ex in zip(w_coll_ad, w_coll_ex)],
-        'tested_functions': auction_output['tested_functions'],
+        'tested_functions': tested_fns_orig,
     }
     return result
     
