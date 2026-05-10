@@ -7,6 +7,7 @@ DATA_TERM=""
 POLY_DEGREES=(1 2 3)
 USE_GENETIC=false
 USE_SGD=false
+USE_SGD_BB=false
 NUM_POINTS=20
 NUM_RESTARTS=5
 EXTERNALITY_COST=0.01
@@ -26,6 +27,7 @@ Options:
   --polynomial-degree <deg>  Run only this degree instead of all three (1, 2, 3)
   --genetic                  Use genetic algorithm instead of grid search
   --sgd                      Use SGD optimizer instead of grid search
+  --sgd-bb                   Use bounding-box SGD optimizer instead of grid search
   --num-points <n>           Grid points per coefficient dimension (default: 20, grid search only)
                              Grid size = n^(degree+1); reduce for higher degrees
   --num-restarts <n>         SGD restarts sweeping intercept across v range (default: 5, SGD only)
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
         --polynomial-degree) POLY_DEGREES=("$2"); shift 2 ;;
         --genetic)          USE_GENETIC=true;     shift   ;;
         --sgd)              USE_SGD=true;         shift   ;;
+        --sgd-bb)           USE_SGD_BB=true;      shift   ;;
         --num-points)       NUM_POINTS="$2";      shift 2 ;;
         --num-restarts)     NUM_RESTARTS="$2";       shift 2 ;;
         --externality-cost) EXTERNALITY_COST="$2";  shift 2 ;;
@@ -97,6 +100,15 @@ for file in "${files[@]}"; do
                 --id "$id"
         elif $USE_SGD; then
             python Collateralized_Auction_sgd.py \
+                --data "$file" \
+                --k 1 \
+                --externality-cost "$EXTERNALITY_COST" \
+                --polynomial-degree "$poly" \
+                --seed 1234 \
+                --num-restarts "$NUM_RESTARTS" \
+                --id "$id"
+        elif $USE_SGD_BB; then
+            python Collateralized_Auction_sgd_bb.py \
                 --data "$file" \
                 --k 1 \
                 --externality-cost "$EXTERNALITY_COST" \
