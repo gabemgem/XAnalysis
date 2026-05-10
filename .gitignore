@@ -2,6 +2,8 @@
 data/
 
 .idea/
+*.xml
+*.iml
 
 *.aux
 
