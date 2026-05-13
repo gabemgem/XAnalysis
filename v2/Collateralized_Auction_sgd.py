@@ -54,15 +54,17 @@ def run_auction_set(tau_coeffs, advertisers, k=1):
     )
 
 
-def _eval_on_auction(beta, advertiser_set, k):
+def _eval_on_auction(beta, advertiser_set, k, e_scale=1.0):
     """Welfare of the top-k admitted advertisers for one coefficient vector and one auction draw."""
     v = np.array([a[0] for a in advertiser_set])
     e = np.array([a[1] for a in advertiser_set])
     d = len(beta)
 
-    e_powers = np.column_stack([e ** p for p in range(d)])  # (n, d)
-    tau_vals = e_powers @ beta                               # (n,)
-    admitted = v >= tau_vals                                 # (n,)
+    # Normalize e for tau evaluation only; welfare still uses original e
+    e_norm = e / e_scale
+    e_powers = np.column_stack([e_norm ** p for p in range(d)])  # (n, d)
+    tau_vals = e_powers @ beta                                    # (n,)
+    admitted = v >= tau_vals                                      # (n,)
 
     order = np.argsort(-v)
     admitted_s = admitted[order]
@@ -75,28 +77,29 @@ def _eval_on_auction(beta, advertiser_set, k):
     return float(top_k @ v_s + top_k @ e_s)
 
 
-def _compute_eps_vec(advertisers, polynomial_degree, eps):
+def _compute_eps_vec(advertisers, polynomial_degree, eps, e_scale=1.0):
     """
     Per-coefficient finite-difference step sizes.
 
-    For degree-k coefficient, tau perturbation = eps_k * e^k.  To reliably
-    cross an admission boundary we need eps_k * |e|^k ~ std(v), so:
-        eps_k = eps * std(v) / mean(|e|^k)
+    Coefficients operate on normalized externalities (e / e_scale), so the
+    perturbation to tau at a point is eps_k * (e/e_scale)^k.  To reliably
+    cross an admission boundary we need eps_k * mean(|e/e_scale|^k) ~ std(v), so:
+        eps_k = eps * std(v) / mean(|e/e_scale|^k)
     """
     all_v = [a[0] for ads in advertisers for a in ads]
     all_e = [a[1] for ads in advertisers for a in ads]
     std_v = float(np.std(all_v)) or 1.0
-    abs_e = np.abs(all_e)
+    abs_e_norm = np.abs(all_e) / e_scale
     eps_vec = np.zeros(polynomial_degree + 1)
     for k in range(polynomial_degree + 1):
-        mean_ek = float(np.mean(abs_e ** k)) if k > 0 else 1.0
+        mean_ek = float(np.mean(abs_e_norm ** k)) if k > 0 else 1.0
         mean_ek = mean_ek if mean_ek > 1e-12 else 1e-12
         eps_vec[k] = eps * std_v / mean_ek
     return eps_vec
 
 
 def _run_one_sgd(advertisers, polynomial_degree, k, beta0, eps_vec,
-                 num_iterations, batch_size, lr, rng):
+                 num_iterations, batch_size, lr, rng, e_scale=1.0):
     """Single SGD run from a given starting point."""
     d = polynomial_degree + 1
     beta = beta0.copy()
@@ -108,7 +111,7 @@ def _run_one_sgd(advertisers, polynomial_degree, k, beta0, eps_vec,
     trajectory = []
 
     def batch_welfare(b, batch):
-        return float(np.mean([_eval_on_auction(b, ads, k) for ads in batch]))
+        return float(np.mean([_eval_on_auction(b, ads, k, e_scale) for ads in batch]))
 
     for t in range(1, num_iterations + 1):
         idx = rng.choice(N, size=min(batch_size, N), replace=False)
@@ -146,15 +149,23 @@ def run_sgd_search(advertisers, polynomial_degree, k=1, num_iterations=500,
     the v range so the threshold starts at a meaningful position in the data.
     Per-coefficient eps scaling ensures each perturbation crosses admission
     boundaries regardless of the polynomial degree.
+
+    Externalities are normalized by their std before tau evaluation so that
+    Adam's uniform step size (≈lr per coefficient) has the same effective
+    influence on the tau shape for all polynomial degrees.  The welfare
+    calculation always uses original (un-normalized) e values.  Returned
+    coefficients are un-normalized back to original e-space.
     """
     rng = np.random.default_rng(seed)
     d = polynomial_degree + 1
 
-    eps_vec = _compute_eps_vec(advertisers, polynomial_degree, eps)
-    print(f"Per-coefficient eps: {eps_vec.tolist()}")
-
     all_v = [a[0] for ads in advertisers for a in ads]
+    all_e = [a[1] for ads in advertisers for a in ads]
     v_min, v_max = float(np.min(all_v)), float(np.max(all_v))
+    e_scale = float(np.std(all_e)) or 1.0
+
+    eps_vec = _compute_eps_vec(advertisers, polynomial_degree, eps, e_scale)
+    print(f"e_scale={e_scale:.6g}  Per-coefficient eps: {eps_vec.tolist()}")
 
     # Sweep intercepts: include tau=0 (admits all) and v_max (admits none)
     if num_restarts == 1:
@@ -165,29 +176,36 @@ def run_sgd_search(advertisers, polynomial_degree, k=1, num_iterations=500,
     print(f"SGD: {d} coefficients, {num_iterations} iterations × batch {batch_size}, {num_restarts} restarts")
     start_time = time.time()
 
-    global_best_beta, global_best_w = np.zeros(d), -np.inf
-    global_trajectory = []
+    global_best_beta_norm, global_best_w = np.zeros(d), -np.inf
+    global_trajectory_norm = []
 
     for r, b0 in enumerate(intercepts):
         beta0 = np.zeros(d)
         beta0[0] = b0
 
-        best_beta, best_w, traj = _run_one_sgd(
+        best_beta_norm, best_w, traj = _run_one_sgd(
             advertisers, polynomial_degree, k, beta0, eps_vec,
-            num_iterations, batch_size, lr, rng,
+            num_iterations, batch_size, lr, rng, e_scale=e_scale,
         )
-        exact_w = float(np.mean([_eval_on_auction(best_beta, ads, k) for ads in advertisers]))
+        exact_w = float(np.mean([_eval_on_auction(best_beta_norm, ads, k, e_scale) for ads in advertisers]))
         print(f"  Restart {r+1}/{num_restarts}  β₀={b0:.4f}  batch_best={best_w:.6f}  exact={exact_w:.6f}")
 
-        global_trajectory.extend(traj)
+        global_trajectory_norm.extend(traj)
         if exact_w > global_best_w:
             global_best_w = exact_w
-            global_best_beta = best_beta.copy()
+            global_best_beta_norm = best_beta_norm.copy()
 
     elapsed = time.time() - start_time
     print(f"SGD complete in {elapsed:.1f}s  global exact welfare={global_best_w:.6f}")
 
-    return global_best_beta.tolist(), global_best_w, global_trajectory
+    # Un-normalize: tau(e) = Σ β_norm[k] * (e/e_scale)^k = Σ (β_norm[k]/e_scale^k) * e^k
+    global_best_beta = [c / (e_scale ** k) for k, c in enumerate(global_best_beta_norm)]
+    global_trajectory = [
+        [c / (e_scale ** k) for k, c in enumerate(coeffs)]
+        for coeffs in global_trajectory_norm
+    ]
+
+    return global_best_beta, global_best_w, global_trajectory
 
 
 def print_stats(auction_output):

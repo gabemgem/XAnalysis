@@ -114,6 +114,76 @@ def plot_tau_grid(records, output_dir, tag, max_fns=200, save=True):
     plt.close(fig)
 
 
+def plot_tau_grid_zoomed(records, output_dir, tag, max_fns=200, percentile=95, save=True):
+    """Same as plot_tau_grid but axes are clipped to [p(100-p), p(p)] of the data distribution."""
+    n = len(records)
+    ncols = min(5, n)
+    nrows = math.ceil(n / ncols)
+
+    fig, axs = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), squeeze=False)
+
+    for idx, rec in enumerate(records):
+        row, col = divmod(idx, ncols)
+        ax = axs[row][col]
+
+        ext_cost = rec['externality_cost_per_impression']
+        tau_coeffs = rec['tau']
+        tested_fns = rec.get('tested_functions') or []
+        advertisers = rec['advertisers']
+
+        all_e = np.array([a[1] for draw in advertisers for a in draw])
+        all_v = np.array([a[0] for draw in advertisers for a in draw])
+
+        # Percentile-based axis bounds
+        e_lo = float(np.percentile(all_e, 100 - percentile))
+        e_hi = float(np.percentile(all_e, percentile))
+        v_hi = float(np.percentile(all_v, percentile))
+
+        # Scatter a sample of advertiser points (at most 300); matplotlib clips to axes
+        sample_size = min(300, len(all_e))
+        rng = np.random.default_rng(0)
+        idx_sample = rng.choice(len(all_e), size=sample_size, replace=False)
+        ax.scatter(all_e[idx_sample], all_v[idx_sample],
+                   s=4, alpha=0.3, color='steelblue', zorder=1)
+
+        # Plot tested functions (gray) over the zoomed e range
+        e_line = np.linspace(e_lo, e_hi, 200)
+        sample_fns = tested_fns
+        if max_fns is not None and len(tested_fns) > max_fns:
+            chosen = rng.choice(len(tested_fns), size=max_fns, replace=False)
+            sample_fns = [tested_fns[i] for i in chosen]
+        for fn_coeffs in sample_fns:
+            y = np.array([eval_poly(fn_coeffs, e) for e in e_line])
+            ax.plot(e_line, y, color='gray', alpha=0.15, linewidth=0.5, zorder=2)
+
+        # Plot optimal tau (red)
+        y_opt = np.array([eval_poly(tau_coeffs, e) for e in e_line])
+        ax.plot(e_line, y_opt, color='red', linewidth=2.0, zorder=3, label='optimal tau')
+
+        ax.set_xlim(e_lo, e_hi)
+        ax.set_ylim(0, v_hi * 1.05)
+        ax.set_title(f'ext_cost={ext_cost:.4g}', fontsize=9)
+        ax.set_xlabel('Externality (e)', fontsize=8)
+        ax.set_ylabel('Tau threshold', fontsize=8)
+        ax.tick_params(labelsize=7)
+
+    for idx in range(n, nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axs[row][col].set_visible(False)
+
+    fig.suptitle(f'Tested and Optimal Tau Functions by Externality Cost (p{100-percentile}–p{percentile} zoom)', fontsize=12)
+    fig.tight_layout()
+
+    if save:
+        os.makedirs(output_dir, exist_ok=True)
+        out_path = os.path.join(output_dir, f'sweep_{tag}_tested_functions_zoomed.png')
+        fig.savefig(out_path, dpi=150)
+        print(f"Saved: {out_path}")
+    else:
+        plt.show()
+    plt.close(fig)
+
+
 def plot_welfare_change(records, output_dir, tag, save=True):
     ext_costs = [r['externality_cost_per_impression'] for r in records]
     delta_means = []
@@ -182,6 +252,7 @@ def main():
         print(f"  ext_cost={ext:.6g}  tau={[f'{c:.4g}' for c in tau]}  delta_welfare={dw:.4f}")
 
     plot_tau_grid(records, args.output_dir, tag, max_fns=args.max_fns, save=save)
+    plot_tau_grid_zoomed(records, args.output_dir, tag, max_fns=args.max_fns, save=save)
     plot_welfare_change(records, args.output_dir, tag, save=save)
 
 

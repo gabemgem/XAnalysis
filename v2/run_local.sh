@@ -6,10 +6,13 @@ set -e
 DATA_TERM=""
 POLY_DEGREES=(1 2 3)
 USE_GENETIC=false
+USE_GENETIC2=false
 USE_SGD=false
 USE_SGD_BB=false
 NUM_POINTS=20
 NUM_RESTARTS=5
+NUM_GENERATIONS=500
+SOL_PER_POP=50
 EXTERNALITY_COST=0.01
 TAG="test"
 
@@ -25,12 +28,15 @@ Options:
                              (e.g. "a" matches a_single_modal_normal_distribution.csv)
                              Default: all CSV files in data/samples/
   --polynomial-degree <deg>  Run only this degree instead of all three (1, 2, 3)
-  --genetic                  Use genetic algorithm instead of grid search
+  --genetic                  Use original genetic algorithm (normalized)
+  --genetic2                 Use new genetic algorithm (original space, vectorized)
   --sgd                      Use SGD optimizer instead of grid search
   --sgd-bb                   Use bounding-box SGD optimizer instead of grid search
   --num-points <n>           Grid points per coefficient dimension (default: 20, grid search only)
                              Grid size = n^(degree+1); reduce for higher degrees
   --num-restarts <n>         SGD restarts sweeping intercept across v range (default: 5, SGD only)
+  --num-generations <n>      GA generations (default: 500, genetic2 only)
+  --sol-per-pop <n>          GA population size (default: 50, genetic2 only)
   --externality-cost <c>     Externality cost parameter (default: 0.01)
   --tag <tag>                Label appended to run ID: <file-prefix>_<degree>_<tag>
                              (default: test)
@@ -50,15 +56,18 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --data)             DATA_TERM="$2";       shift 2 ;;
+        --data)             DATA_TERM="$2";        shift 2 ;;
         --polynomial-degree) POLY_DEGREES=("$2"); shift 2 ;;
-        --genetic)          USE_GENETIC=true;     shift   ;;
-        --sgd)              USE_SGD=true;         shift   ;;
-        --sgd-bb)           USE_SGD_BB=true;      shift   ;;
-        --num-points)       NUM_POINTS="$2";      shift 2 ;;
-        --num-restarts)     NUM_RESTARTS="$2";       shift 2 ;;
-        --externality-cost) EXTERNALITY_COST="$2";  shift 2 ;;
-        --tag)              TAG="$2";               shift 2 ;;
+        --genetic)          USE_GENETIC=true;      shift   ;;
+        --genetic2)         USE_GENETIC2=true;     shift   ;;
+        --sgd)              USE_SGD=true;          shift   ;;
+        --sgd-bb)           USE_SGD_BB=true;       shift   ;;
+        --num-points)       NUM_POINTS="$2";       shift 2 ;;
+        --num-restarts)     NUM_RESTARTS="$2";     shift 2 ;;
+        --num-generations)  NUM_GENERATIONS="$2";  shift 2 ;;
+        --sol-per-pop)      SOL_PER_POP="$2";      shift 2 ;;
+        --externality-cost) EXTERNALITY_COST="$2"; shift 2 ;;
+        --tag)              TAG="$2";              shift 2 ;;
         --help)             usage ;;
         *) echo "Unknown argument: $1"; echo "Run $(basename "$0") --help for usage."; exit 1 ;;
     esac
@@ -97,6 +106,16 @@ for file in "${files[@]}"; do
                 --externality-cost "$EXTERNALITY_COST" \
                 --polynomial-degree "$poly" \
                 --seed 1234 \
+                --id "$id"
+        elif $USE_GENETIC2; then
+            python Collateralized_Auction_genetic2.py \
+                --data "$file" \
+                --k 1 \
+                --externality-cost "$EXTERNALITY_COST" \
+                --polynomial-degree "$poly" \
+                --seed 1234 \
+                --num-generations "$NUM_GENERATIONS" \
+                --sol-per-pop "$SOL_PER_POP" \
                 --id "$id"
         elif $USE_SGD; then
             python Collateralized_Auction_sgd.py \

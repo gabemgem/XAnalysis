@@ -9,10 +9,13 @@ EXT_MAX=100.0
 NUM_EXT=10
 LOG_SCALE=false
 USE_GENETIC=false
+USE_GENETIC2=false
 USE_SGD=false
 USE_GRID=false
 USE_SGD_BB=false   # default if none specified
 NUM_RESTARTS=5
+NUM_GENERATIONS=500
+SOL_PER_POP=50
 NUM_ITERATIONS=500
 BATCH_SIZE=50
 LR=0.02
@@ -42,7 +45,8 @@ Algorithm (default: --sgd-bb):
   --sgd-bb                Bounding-box Adam optimizer (default)
   --sgd                   SGD optimizer
   --grid                  Grid search
-  --genetic               Genetic algorithm
+  --genetic               Genetic algorithm (normalized)
+  --genetic2              Genetic algorithm (original space, vectorized)
 
 SGD-BB options (ignored for other algorithms):
   --num-restarts <n>      Restarts per run (default: 5, also used by --sgd)
@@ -53,6 +57,10 @@ SGD-BB options (ignored for other algorithms):
 
 Grid search options:
   --num-points <n>        Grid points per coefficient dimension (default: 20)
+
+Genetic2 options:
+  --num-generations <n>   GA generations (default: 500)
+  --sol-per-pop <n>       Population size (default: 50)
 
   --polynomial-degree <n> Tau polynomial degree: 1 (linear), 2 (quadratic), or 3 (cubic)
                           (default: 1)
@@ -86,11 +94,14 @@ while [[ $# -gt 0 ]]; do
         --ext-max)         EXT_MAX="$2";         shift 2 ;;
         --num-ext)         NUM_EXT="$2";         shift 2 ;;
         --log-scale)       LOG_SCALE=true;        shift   ;;
-        --sgd-bb)          USE_SGD_BB=true;       shift   ;;
-        --sgd)             USE_SGD=true;          shift   ;;
-        --grid)            USE_GRID=true;         shift   ;;
-        --genetic)         USE_GENETIC=true;      shift   ;;
-        --num-restarts)    NUM_RESTARTS="$2";     shift 2 ;;
+        --sgd-bb)          USE_SGD_BB=true;        shift   ;;
+        --sgd)             USE_SGD=true;           shift   ;;
+        --grid)            USE_GRID=true;          shift   ;;
+        --genetic)         USE_GENETIC=true;       shift   ;;
+        --genetic2)        USE_GENETIC2=true;      shift   ;;
+        --num-restarts)    NUM_RESTARTS="$2";      shift 2 ;;
+        --num-generations) NUM_GENERATIONS="$2";   shift 2 ;;
+        --sol-per-pop)     SOL_PER_POP="$2";       shift 2 ;;
         --num-iterations)  NUM_ITERATIONS="$2";   shift 2 ;;
         --batch-size)      BATCH_SIZE="$2";       shift 2 ;;
         --lr)              LR="$2";               shift 2 ;;
@@ -105,7 +116,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Determine which algorithm to use (default: sgd-bb)
-if ! $USE_GENETIC && ! $USE_SGD && ! $USE_GRID; then
+if ! $USE_GENETIC && ! $USE_GENETIC2 && ! $USE_SGD && ! $USE_GRID; then
     USE_SGD_BB=true
 fi
 
@@ -147,6 +158,10 @@ for file in "${files[@]}"; do
         algo_script="Collateralized_Auction_genetic_script.py"
         result_prefix="ga_results"
         algo_label="genetic"
+    elif $USE_GENETIC2; then
+        algo_script="Collateralized_Auction_genetic2.py"
+        result_prefix="genetic2_results"
+        algo_label="genetic2"
     elif $USE_SGD; then
         algo_script="Collateralized_Auction_sgd.py"
         result_prefix="sgd_results"
@@ -182,6 +197,16 @@ for file in "${files[@]}"; do
                 --externality-cost "$ext_cost" \
                 --polynomial-degree "$POLY_DEGREE" \
                 --seed 1234 \
+                --id "$id"
+        elif $USE_GENETIC2; then
+            python "$algo_script" \
+                --data "$file" \
+                --k 1 \
+                --externality-cost "$ext_cost" \
+                --polynomial-degree "$POLY_DEGREE" \
+                --seed 1234 \
+                --num-generations "$NUM_GENERATIONS" \
+                --sol-per-pop "$SOL_PER_POP" \
                 --id "$id"
         elif $USE_SGD; then
             python "$algo_script" \
