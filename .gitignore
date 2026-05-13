@@ -19,3 +19,4 @@ data/
 
 *.gz
 *.pyc
+v2/output/
