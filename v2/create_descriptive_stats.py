@@ -19,7 +19,6 @@ import argparse
 import os
 import pickle
 import sys
-import warnings
 
 import matplotlib
 matplotlib.use('Agg')
@@ -79,12 +78,6 @@ CATEGORY_LABELS = {
 
 def load_tweets(csv_path):
     tweets = pd.read_csv(csv_path)
-    if 'impressions_per_month' in tweets.columns:
-        tweets['thousands_impressions_per_month'] = tweets['impressions_per_month'] / 1000
-    if 'agreement_score' in tweets.columns:
-        before = len(tweets)
-        tweets = tweets[tweets['agreement_score'] >= -400]
-        print(f"Dropped {before - len(tweets):,} outlier rows with agreement_score < -400")
     print(f"Loaded {len(tweets):,} tweets from {csv_path}")
     return tweets
 
@@ -125,23 +118,17 @@ def load_notes_and_ratings_from_db(tweet_ids):
 
     note_ids = [str(nid) for nid in notes['noteId'].unique()]
 
-    # Ratings (only helpfulnessLevel needed)
+    # Ratings
     print(f"Querying ratings for {len(note_ids):,} note IDs (this may take a minute)...")
     r_placeholders = ', '.join(['%s'] * len(note_ids))
-    query = f"SELECT noteId, helpfulnessLevel, agree, disagree FROM note_ratings WHERE noteId IN ({r_placeholders})"
+    query = f"SELECT noteId, helpfulnessLevel FROM note_ratings WHERE noteId IN ({r_placeholders})"
     cursor.execute(query, note_ids)
     rows = cursor.fetchall()
-    ratings = pd.DataFrame(rows, columns=['noteId', 'helpfulnessLevel', 'agree', 'disagree'])
+    ratings = pd.DataFrame(rows, columns=['noteId', 'helpfulnessLevel'])
     print(f"  Retrieved {len(ratings):,} ratings.")
 
     cursor.close()
     conn.close()
-    
-    # Print number of ratings with no agreement signal (both agree and disagree are 0)
-    no_signal = ratings[(ratings['agree'] == 0) & (ratings['disagree'] == 0)]
-    if len(no_signal) > 0:
-        warnings.warn(f"{len(no_signal):,} ratings have no agreement signal (agree=0 and disagree=0).")
-    
     return notes, ratings
 
 
@@ -176,12 +163,69 @@ def compute_note_rating_counts(notes, ratings):
 
 # ─── Descriptive tables ───────────────────────────────────────────────────────
 
+_DATA_PULL_DATE = pd.Timestamp('2025-02-02')
+
+
+def table_date_range(tweets, tables_dir):
+    """Report the temporal range of collected tweets and save monthly post counts."""
+    if 'created_at' not in tweets.columns:
+        print("  No 'created_at' column; skipping date range analysis.")
+        return
+
+    dates = pd.to_datetime(tweets['created_at'])
+    earliest = dates.min()
+    latest   = dates.max()
+    span_days = (latest - earliest).days
+    min_age   = (_DATA_PULL_DATE - latest).days
+    max_age   = (_DATA_PULL_DATE - earliest).days
+
+    print(f"\nTweet date range ({len(tweets):,} posts):")
+    print(f"  Earliest post : {earliest.date()}")
+    print(f"  Latest post   : {latest.date()}")
+    print(f"  Span          : {span_days} days  ({span_days / 365.25:.1f} years)")
+    print(f"  Data pull date: {_DATA_PULL_DATE.date()}")
+    print(f"  Age at pull   : {min_age}–{max_age} days  "
+          f"({min_age / 30:.1f}–{max_age / 30:.1f} months)")
+
+    # Year × month breakdown
+    monthly = (dates.dt.to_period('M')
+               .value_counts()
+               .sort_index()
+               .rename('n_posts'))
+    print(f"\n  Posts by year-month:")
+    for period, cnt in monthly.items():
+        print(f"    {period}: {cnt:,}")
+
+    by_year = (dates.dt.year
+               .value_counts()
+               .sort_index()
+               .rename('n_posts'))
+    print(f"\n  Posts by year:")
+    for yr, cnt in by_year.items():
+        print(f"    {yr}: {cnt:,}")
+
+    # Save
+    summary = pd.DataFrame([{
+        'earliest_post':     earliest.date(),
+        'latest_post':       latest.date(),
+        'pull_date':         _DATA_PULL_DATE.date(),
+        'span_days':         span_days,
+        'min_age_days':      min_age,
+        'max_age_days':      max_age,
+    }])
+    path_summary = os.path.join(tables_dir, 'tweet_date_range.csv')
+    path_monthly = os.path.join(tables_dir, 'tweet_monthly_counts.csv')
+    summary.to_csv(path_summary, index=False)
+    monthly.to_csv(path_monthly)
+    print(f"  -> {path_summary}")
+    print(f"  -> {path_monthly}")
+
+
 def table_tweet_stats(tweets, tables_dir):
     cols = [c for c in [
-        'impression_count', 'impressions_per_month', 'thousands_impressions_per_month',
-        'action_count', 'action_count_per_1000_impressions',
-        'agreement_score', 'ext_per_month', 'v_score', 'e_score',
-        'interaction_score',
+        'impression_count', 'impressions_per_month',
+        'action_count', 'agg_post_rating', 'agg_post_rating_per_impression',
+        'agg_rating_per_month', 'v_score', 'e_score',
     ] if c in tweets.columns]
 
     stats = tweets[cols].describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9]).T
@@ -195,8 +239,7 @@ def table_tweet_stats(tweets, tables_dir):
 
 def table_tweet_correlations(tweets, tables_dir):
     cols = [c for c in [
-        'thousands_impressions_per_month', 'action_count_per_1000_impressions',
-        'agreement_score', 'ext_per_month', 'v_score', 'e_score',
+        'impressions_per_month', 'agg_rating_per_month', 'v_score', 'e_score',
     ] if c in tweets.columns]
     corr = tweets[cols].corr().round(4)
     path = os.path.join(tables_dir, 'tweet_correlations.csv')
@@ -495,404 +538,45 @@ def fig_multi_note_posts(notes_r, figures_dir):
     _save(fig, figures_dir, 'multi_note_posts.png')
 
 
-def fig_escore_new_rating_mapping(notes, ratings, tweets, figures_dir):
-    """Side-by-side e-score vs v-score comparing original (-1/0/1) and new (0/0.5/1) rating maps."""
 
-    MIS = 'MISINFORMED_OR_POTENTIALLY_MISLEADING'
-    NM  = 'NOT_MISLEADING'
 
-    new_ratings_map = {
-        'HELPFUL':          1.0,
-        'SOMEWHAT_HELPFUL': 0.5,
-        'NOT_HELPFUL':      0.0,
-    }
-    notes_map = {MIS: -1.0, NM: 1.0}
 
-    # Map each rating to its new numeric score, drop unmapped rows
-    r = ratings[['noteId', 'helpfulnessLevel']].copy()
-    r['rating_score'] = r['helpfulnessLevel'].map(new_ratings_map)
-    r = r.dropna(subset=['rating_score'])
 
-    # Sum ratings per note, add 1 for the original noter
-    note_sums = (r.groupby('noteId')['rating_score'].sum()
-                 .reset_index()
-                 .rename(columns={'rating_score': 'rating_sum'}))
-    note_sums['rating_sum'] += 1.0
 
-    # Attach note_score and merge rating sums
-    n = notes[['noteId', 'tweetId', 'classification']].copy()
-    n['note_score'] = n['classification'].map(notes_map)
-    n = n.dropna(subset=['note_score'])
-    n = n.merge(note_sums, on='noteId', how='left')
-    n['new_ext_score'] = n['note_score'] * n['rating_sum']
+def fig_posts_by_month(tweets, figures_dir):
+    """Bar chart of number of posts collected per calendar month."""
+    if 'created_at' not in tweets.columns:
+        print("  No 'created_at' column; skipping posts-by-month figure.")
+        return
 
-    # Sum externality scores per tweet
-    ext_by_tweet = (n.groupby('tweetId')['new_ext_score'].sum()
-                    .reset_index()
-                    .rename(columns={'tweetId': 'id'}))
+    dates = pd.to_datetime(tweets['created_at'])
+    monthly = (dates.dt.to_period('M')
+               .value_counts()
+               .sort_index())
+    x_labels = [str(p) for p in monthly.index]
+    counts   = monthly.values
 
-    need = [c for c in ['id', 'impression_count', 'impressions_per_month', 'v_score', 'agreement_score']
-            if c in tweets.columns]
-    tw = tweets[need].copy()
-    tw['id']           = tw['id'].astype(str)
-    ext_by_tweet['id'] = ext_by_tweet['id'].astype(str)
-    df = tw.merge(ext_by_tweet, on='id', how='inner').dropna()
-    df = df[df['impression_count'] > 0]
-
-    # Follow notebook pattern exactly
-    df['new_agreement_score'] = df['new_ext_score'] / (df['impression_count'] / 1000)
-    avg_new = float(df['new_agreement_score'].mean())
-    df['new_externality'] = df['new_agreement_score'] / np.abs(avg_new)
-    df['new_e_score']     = df['new_externality'] * df['impressions_per_month'] / 1000
-
-    # 95th-percentile axis limits
-    orig = tweets[['e_score', 'v_score']].dropna() if 'e_score' in tweets.columns else df[['new_e_score', 'v_score']].rename(columns={'new_e_score': 'e_score'})
-    e_lim_orig = float(np.percentile(orig['e_score'].abs(), 95)) * 1.05
-    e_lim_new  = float(np.percentile(df['new_e_score'].abs(), 95)) * 1.05
-    v_lim = float(np.percentile(
-        np.concatenate([orig['v_score'].values, df['v_score'].values]), 95
-    )) * 1.05
-
-    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
-
-    ax_l.scatter(orig['e_score'], orig['v_score'],
-                 s=8, alpha=0.4, color='steelblue', rasterized=True)
-    ax_l.axvline(0, color='gray', linewidth=0.8, linestyle='--', alpha=0.6)
-    ax_l.set_xlim(-e_lim_orig, e_lim_orig)
-    ax_l.set_ylim(0, v_lim)
-    ax_l.set_xlabel('e-score (externality per month)', fontsize=11)
-    ax_l.set_ylabel('v-score (value per month)', fontsize=11)
-    ax_l.set_title('Original Map  (NOT_HELPFUL=−1, SOMEWHAT_HELPFUL=0, HELPFUL=1)', fontsize=11)
-    ax_l.grid(True, alpha=0.3)
-
-    ax_r.scatter(df['new_e_score'], df['v_score'],
-                 s=8, alpha=0.4, color='darkorange', rasterized=True)
-    ax_r.axvline(0, color='gray', linewidth=0.8, linestyle='--', alpha=0.6)
-    ax_r.set_xlim(-e_lim_new, e_lim_new)
-    ax_r.set_xlabel('new e-score (externality per month)', fontsize=11)
-    ax_r.set_title('New Map  (NOT_HELPFUL=0, SOMEWHAT_HELPFUL=0.5, HELPFUL=1)', fontsize=11)
-    ax_r.grid(True, alpha=0.3)
-
-    avg_orig = float(tweets['agreement_score'].mean()) if 'agreement_score' in tweets.columns else float('nan')
-    fig.suptitle(
-        f'e-score vs v-score: Shifting NOT_HELPFUL from −1 to 0, SOMEWHAT_HELPFUL from 0 to 0.5\n'
-        f'avg agreement score — original: {avg_orig:.4f},  new: {avg_new:.4f}',
-        fontsize=12,
-    )
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.bar(x_labels, counts, color='steelblue', alpha=0.85, edgecolor='white')
+    ax.set_xlabel('Year-Month', fontsize=11)
+    ax.set_ylabel('Number of Posts', fontsize=11)
+    ax.set_title(f'Posts Collected per Month  (N={len(tweets):,}, pull date Feb 2 2025)', fontsize=12)
+    ax.tick_params(axis='x', rotation=45, labelsize=8)
+    ax.grid(True, axis='y', alpha=0.3)
     fig.tight_layout()
-    _save(fig, figures_dir, 'escore_new_rating_mapping.png')
+    _save(fig, figures_dir, 'posts_by_month.png')
 
 
-def fig_escore_per_month_raw(notes, ratings, tweets, figures_dir):
-    """Side-by-side scatter: original e/v scores vs new per-month-raw scores.
-
-    New e-score: Σ(note_direction × (Σ new_rating_scores + 1)) / months_active
-    New v-score: action_count / months_active
-    Rating map:  NOT_HELPFUL=0, SOMEWHAT_HELPFUL=0.5, HELPFUL=1
-    """
-
-    MIS = 'MISINFORMED_OR_POTENTIALLY_MISLEADING'
-    NM  = 'NOT_MISLEADING'
-
-    new_ratings_map = {
-        'HELPFUL':          1.0,
-        'SOMEWHAT_HELPFUL': 0.5,
-        'NOT_HELPFUL':      0.0,
-    }
-
-    # Sum new rating scores per note, add 1 for original noter
-    r = ratings[['noteId', 'helpfulnessLevel']].copy()
-    r['rating_score'] = r['helpfulnessLevel'].map(new_ratings_map)
-    r = r.dropna(subset=['rating_score'])
-    note_sums = (r.groupby('noteId')['rating_score'].sum()
-                 .reset_index()
-                 .rename(columns={'rating_score': 'rating_sum'}))
-    note_sums['rating_sum'] += 1.0
-
-    # note externality = note_direction × rating_sum
-    n = notes[['noteId', 'tweetId', 'classification']].copy()
-    n['note_score'] = n['classification'].map({MIS: -1.0, NM: 1.0})
-    n = n.dropna(subset=['note_score'])
-    n = n.merge(note_sums, on='noteId', how='left')
-    n['ext_score'] = n['note_score'] * n['rating_sum']
-
-    ext_by_tweet = (n.groupby('tweetId')['ext_score'].sum()
-                    .reset_index()
-                    .rename(columns={'tweetId': 'id'}))
-
-    need = [c for c in ['id', 'action_count', 'impression_count', 'impressions_per_month',
-                        'months_old', 'e_score', 'v_score']
-            if c in tweets.columns]
-    tw = tweets[need].copy()
-    tw['id']           = tw['id'].astype(str)
-    ext_by_tweet['id'] = ext_by_tweet['id'].astype(str)
-    df = tw.merge(ext_by_tweet, on='id', how='inner').dropna()
-
-    # months_active: prefer months_old if present, else derive from impression columns
-    if 'months_old' in df.columns:
-        df['months_active'] = df['months_old']
-    else:
-        df['months_active'] = df['impression_count'] / df['impressions_per_month']
-    df = df[df['months_active'] > 0]
-
-    df['new_e_score'] = df['ext_score']    / df['months_active']
-    df['new_v_score'] = df['action_count'] / df['months_active']
-
-    # 95th-percentile axis limits (independent axes since v-score units differ)
-    orig = tweets[['e_score', 'v_score']].dropna() if 'e_score' in tweets.columns else None
-    e_lim_orig = float(np.percentile(orig['e_score'].abs(), 95)) * 1.05 if orig is not None else 1.0
-    v_lim_orig = float(np.percentile(orig['v_score'],        95)) * 1.05 if orig is not None else 1.0
-    e_lim_new  = float(np.percentile(df['new_e_score'].abs(), 95)) * 1.05
-    v_lim_new  = float(np.percentile(df['new_v_score'],       95)) * 1.05
-
-    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(16, 6))
-
-    if orig is not None:
-        ax_l.scatter(orig['e_score'], orig['v_score'],
-                     s=8, alpha=0.4, color='steelblue', rasterized=True)
-        ax_l.set_xlim(-e_lim_orig, e_lim_orig)
-        ax_l.set_ylim(0, v_lim_orig)
-    ax_l.axvline(0, color='gray', linewidth=0.8, linestyle='--', alpha=0.6)
-    ax_l.set_xlabel('e-score (externality per month)', fontsize=11)
-    ax_l.set_ylabel('v-score (value per month)', fontsize=11)
-    ax_l.set_title('Original e-score & v-score\n(complex reach-weighted normalization)', fontsize=11)
-    ax_l.grid(True, alpha=0.3)
-
-    ax_r.scatter(df['new_e_score'], df['new_v_score'],
-                 s=8, alpha=0.4, color='purple', rasterized=True)
-    ax_r.axvline(0, color='gray', linewidth=0.8, linestyle='--', alpha=0.6)
-    ax_r.set_xlim(-e_lim_new, e_lim_new)
-    ax_r.set_ylim(0, v_lim_new)
-    ax_r.set_xlabel('new e-score (note externality sum / months active)', fontsize=11)
-    ax_r.set_ylabel('new v-score (actions / months active)', fontsize=11)
-    ax_r.set_title('New e-score & v-score\n(NOT_HELPFUL=0, SOMEWHAT_HELPFUL=0.5, HELPFUL=1)', fontsize=11)
-    ax_r.grid(True, alpha=0.3)
-
-    fig.suptitle(
-        'e-score vs v-score: Per-Month Raw Scoring\n'
-        'e = Σ note_direction × (Σ rating_score + 1) / months_active   |   v = actions / months_active',
-        fontsize=12,
-    )
-    fig.tight_layout()
-    _save(fig, figures_dir, 'escore_per_month_raw.png')
 
 
-def fig_escore_misleading_only(notes, ratings, tweets, figures_dir):
-    """Side-by-side e-score vs v-score: original vs new (0/0.5/1) map, using only misleading notes."""
-
-    MIS = 'MISINFORMED_OR_POTENTIALLY_MISLEADING'
-
-    new_ratings_map = {
-        'HELPFUL':          1.0,
-        'SOMEWHAT_HELPFUL': 0.5,
-        'NOT_HELPFUL':      0.0,
-    }
-
-    r = ratings[['noteId', 'helpfulnessLevel']].copy()
-    r['rating_score'] = r['helpfulnessLevel'].map(new_ratings_map)
-    r = r.dropna(subset=['rating_score'])
-
-    note_sums = (r.groupby('noteId')['rating_score'].sum()
-                 .reset_index()
-                 .rename(columns={'rating_score': 'rating_sum'}))
-    note_sums['rating_sum'] += 1.0
-
-    # Keep only misleading notes; note_score is always -1
-    n = notes[notes['classification'] == MIS][['noteId', 'tweetId']].copy()
-    n['note_score'] = -1.0
-    n = n.merge(note_sums, on='noteId', how='left')
-    n['new_ext_score'] = n['note_score'] * n['rating_sum']
-
-    ext_by_tweet = (n.groupby('tweetId')['new_ext_score'].sum()
-                    .reset_index()
-                    .rename(columns={'tweetId': 'id'}))
-
-    need = [c for c in ['id', 'impression_count', 'impressions_per_month', 'v_score']
-            if c in tweets.columns]
-    tw = tweets[need].copy()
-    tw['id']           = tw['id'].astype(str)
-    ext_by_tweet['id'] = ext_by_tweet['id'].astype(str)
-    df = tw.merge(ext_by_tweet, on='id', how='inner').dropna()
-    df = df[df['impression_count'] > 0]
-
-    df['new_agreement_score'] = df['new_ext_score'] / (df['impression_count'] / 1000)
-    avg_new = float(df['new_agreement_score'].mean())
-    df['new_externality'] = df['new_agreement_score'] / np.abs(avg_new)
-    df['new_e_score']     = df['new_externality'] * df['impressions_per_month'] / 1000
-
-    orig = tweets[['e_score', 'v_score']].dropna() if 'e_score' in tweets.columns else df[['new_e_score', 'v_score']].rename(columns={'new_e_score': 'e_score'})
-    e_lim_orig = float(np.percentile(orig['e_score'].abs(), 95)) * 1.05
-    e_lim_new  = float(np.percentile(df['new_e_score'].abs(), 95)) * 1.05
-    v_lim = float(np.percentile(
-        np.concatenate([orig['v_score'].values, df['v_score'].values]), 95
-    )) * 1.05
-
-    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
-
-    ax_l.scatter(orig['e_score'], orig['v_score'],
-                 s=8, alpha=0.4, color='steelblue', rasterized=True)
-    ax_l.axvline(0, color='gray', linewidth=0.8, linestyle='--', alpha=0.6)
-    ax_l.set_xlim(-e_lim_orig, e_lim_orig)
-    ax_l.set_ylim(0, v_lim)
-    ax_l.set_xlabel('e-score (externality per month)', fontsize=11)
-    ax_l.set_ylabel('v-score (value per month)', fontsize=11)
-    ax_l.set_title('Original Map  (all notes, NOT_HELPFUL=−1, SOMEWHAT_HELPFUL=0, HELPFUL=1)', fontsize=11)
-    ax_l.grid(True, alpha=0.3)
-
-    ax_r.scatter(df['new_e_score'], df['v_score'],
-                 s=8, alpha=0.4, color='crimson', rasterized=True)
-    ax_r.axvline(0, color='gray', linewidth=0.8, linestyle='--', alpha=0.6)
-    ax_r.set_xlim(-e_lim_new, e_lim_new)
-    ax_r.set_xlabel('new e-score (externality per month)', fontsize=11)
-    ax_r.set_title(f'New Map  (misleading notes only, n={len(df):,} posts,\nNOT_HELPFUL=0, SOMEWHAT_HELPFUL=0.5, HELPFUL=1)', fontsize=11)
-    ax_r.grid(True, alpha=0.3)
-
-    avg_orig = float(tweets['agreement_score'].mean()) if 'agreement_score' in tweets.columns else float('nan')
-    fig.suptitle(
-        f'e-score vs v-score: New Rating Map Applied to Misleading Notes Only\n'
-        f'avg agreement score — original (all notes): {avg_orig:.4f},  new (misleading only): {avg_new:.4f}',
-        fontsize=12,
-    )
-    fig.tight_layout()
-    _save(fig, figures_dir, 'escore_misleading_only.png')
-
-def fig_impressions_vs_agreement(tweets, figures_dir):
-    """Scatter: thousands of impressions/month (log x) vs agreement score per 1K impressions."""
-    df = tweets[['thousands_impressions_per_month', 'agreement_score']].dropna()
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(df['thousands_impressions_per_month'], df['agreement_score'],
-               s=10, alpha=0.4, color='steelblue', rasterized=True)
-    ax.axhline(0, color='black', linewidth=0.9, linestyle='--', alpha=0.6)
-    ax.set_xscale('log')
-    ax.set_xlabel('Thousands of Impressions per Month (log scale)', fontsize=11)
-    ax.set_ylabel('Agreement Score per 1K Impressions', fontsize=11)
-    ax.set_title('Post Reach vs Community Note Agreement Score', fontsize=12)
-    ax.grid(True, alpha=0.3)
-
-    _save(fig, figures_dir, 'impressions_vs_agreement.png')
 
 
-def fig_impressions_vs_actions(tweets, figures_dir):
-    """Scatter: thousands of impressions/month (log x) vs actions per 1K impressions."""
-    df = tweets[['thousands_impressions_per_month', 'action_count_per_1000_impressions']].dropna()
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(df['thousands_impressions_per_month'], df['action_count_per_1000_impressions'],
-               s=10, alpha=0.4, color='darkorange', rasterized=True)
-    ax.set_xscale('log')
-    ax.set_xlabel('Thousands of Impressions per Month (log scale)', fontsize=11)
-    ax.set_ylabel('Actions per 1K Impressions', fontsize=11)
-    ax.set_title('Post Reach vs Engagement Rate', fontsize=12)
-    ax.grid(True, alpha=0.3)
-
-    _save(fig, figures_dir, 'impressions_vs_actions.png')
 
 
-def fig_impressions_vs_actions_per_month(tweets, figures_dir):
-    """Scatter: thousands of impressions/month (log x) vs actions per month (log y)."""
-    cols = ['thousands_impressions_per_month', 'action_count_per_1000_impressions']
-    df = tweets[cols].dropna()
-    df = df.assign(actions_per_month=df['action_count_per_1000_impressions'] * df['thousands_impressions_per_month'])
-    df = df[df['actions_per_month'] > 0]
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(df['thousands_impressions_per_month'], df['actions_per_month'],
-               s=10, alpha=0.4, color='steelblue', rasterized=True)
-    ax.set_xscale('log')
-    ax.set_yscale('log')
-    ax.set_xlabel('Thousands of Impressions per Month (log scale)', fontsize=11)
-    ax.set_ylabel('Actions per Month (log scale)', fontsize=11)
-    ax.set_title('Post Reach vs Monthly Actions', fontsize=12)
-    ax.grid(True, alpha=0.3)
-
-    _save(fig, figures_dir, 'impressions_vs_actions_per_month.png')
 
 
-def fig_neg_impressions_vs_actions_per_month(tweets, figures_dir):
-    """Scatter: negative thousands of impressions/month (linear x) vs actions per month (linear y)."""
-    cols = ['thousands_impressions_per_month', 'action_count_per_1000_impressions']
-    df = tweets[cols].dropna()
-    df = df.assign(actions_per_month=df['action_count_per_1000_impressions'] * df['thousands_impressions_per_month'])
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(-df['thousands_impressions_per_month'], df['actions_per_month'],
-               s=10, alpha=0.4, color='steelblue', rasterized=True)
-    ax.set_xlabel('Negative Thousands of Impressions per Month', fontsize=11)
-    ax.set_ylabel('Actions per Month', fontsize=11)
-    ax.set_title('Post Reach vs Monthly Actions (Linear Scale)', fontsize=12)
-    ax.grid(True, alpha=0.3)
-
-    _save(fig, figures_dir, 'neg_impressions_vs_actions_per_month.png')
 
 
-def fig_reach_scores_multiplot(tweets, figures_dir):
-    """Two-panel scatter: left = reach×agreement vs actions/month; right = reach×agreement vs actions/month×v_score."""
-    cols = ['thousands_impressions_per_month', 'action_count_per_1000_impressions',
-            'agreement_score', 'v_score', 'e_score']
-    df = tweets[[c for c in cols if c in tweets.columns]].dropna()
-    df = df.assign(
-        actions_per_month=df['action_count_per_1000_impressions'] * df['thousands_impressions_per_month'],
-        x=df['thousands_impressions_per_month'] * df['agreement_score'],
-    )
-
-    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(16, 6))
-
-    # Left: reach×agreement vs actions_per_month
-    ax_left.scatter(df['x'], df['actions_per_month'],
-                    s=10, alpha=0.4, color='steelblue', rasterized=True)
-    ax_left.set_xlabel('Thousands of Impressions per Month × Agreement Score', fontsize=11)
-    ax_left.set_ylabel('Actions per Month', fontsize=11)
-    ax_left.set_title('Weighted Reach vs Monthly Actions', fontsize=12)
-    ax_left.grid(True, alpha=0.3)
-
-    # Right: e_score vs v_score
-    if 'e_score' in df.columns and 'v_score' in df.columns:
-        ax_right.scatter(df['e_score'], df['v_score'],
-                         s=10, alpha=0.4, color='darkorange', rasterized=True)
-        ax_right.set_xlabel('Externality Score (e)', fontsize=11)
-        ax_right.set_ylabel('Engagement Score (v)', fontsize=11)
-        ax_right.set_title('Externality Score vs Engagement Score', fontsize=12)
-        ax_right.grid(True, alpha=0.3)
-
-    fig.tight_layout()
-    _save(fig, figures_dir, 'reach_scores_multiplot.png')
-
-
-def fig_agreement_vs_actions_by_reach(tweets, figures_dir):
-    """Scatter: agreement score vs actions per 1K impressions, color = reach (log scale)."""
-    cols = ['thousands_impressions_per_month', 'agreement_score', 'action_count_per_1000_impressions']
-    df = tweets[cols].dropna()
-
-    # Clip extreme agreement scores so color gradient is visible
-    p99_reach = df['thousands_impressions_per_month'].quantile(0.99)
-    reach_norm = mcolors.LogNorm(
-        vmin=df['thousands_impressions_per_month'].clip(lower=0.001).min(),
-        vmax=df['thousands_impressions_per_month'].clip(upper=p99_reach).max(),
-    )
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    sc = ax.scatter(
-        df['agreement_score'],
-        df['action_count_per_1000_impressions'],
-        c=df['thousands_impressions_per_month'].clip(lower=0.001),
-        s=12, alpha=0.5, cmap='plasma', norm=reach_norm,
-        rasterized=True,
-    )
-    cb = fig.colorbar(sc, ax=ax)
-    cb.set_label('Thousands of Impressions per Month (log scale)', fontsize=10)
-
-    ax.axvline(0, color='gray', linewidth=0.9, linestyle='--', alpha=0.6)
-    ax.set_xlabel('Agreement Score per 1K Impressions', fontsize=11)
-    ax.set_ylabel('Actions per 1K Impressions', fontsize=11)
-    ax.set_title('Note Agreement vs Engagement,\ncolored by Post Reach', fontsize=12)
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(-20, 5)
-
-    _save(fig, figures_dir, 'agreement_vs_actions_by_reach.png')
-
-
-# ─── Main ─────────────────────────────────────────────────────────────────────
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -922,16 +606,12 @@ def main():
     tweets = load_tweets(args.tweets_csv)
 
     print("\n=== Descriptive Tables: Tweets ===")
+    table_date_range(tweets, tables_dir)
     table_tweet_stats(tweets, tables_dir)
     table_tweet_correlations(tweets, tables_dir)
 
     print("\n=== Figures: Posts ===")
-    fig_impressions_vs_agreement(tweets, figures_dir)
-    fig_impressions_vs_actions(tweets, figures_dir)
-    fig_impressions_vs_actions_per_month(tweets, figures_dir)
-    fig_neg_impressions_vs_actions_per_month(tweets, figures_dir)
-    fig_reach_scores_multiplot(tweets, figures_dir)
-    fig_agreement_vs_actions_by_reach(tweets, figures_dir)
+    fig_posts_by_month(tweets, figures_dir)
 
     # ── Notes + Ratings ───────────────────────────────────────────────────────
     if args.skip_db:
@@ -964,9 +644,6 @@ def main():
     fig_note_scatter(notes_r, figures_dir)
     fig_category_bar(notes_r, figures_dir)
     fig_multi_note_posts(notes_r, figures_dir)
-    fig_escore_new_rating_mapping(notes, ratings, tweets, figures_dir)
-    fig_escore_per_month_raw(notes, ratings, tweets, figures_dir)
-    fig_escore_misleading_only(notes, ratings, tweets, figures_dir)
 
     print("\nAll outputs written to:", args.output_dir)
 
