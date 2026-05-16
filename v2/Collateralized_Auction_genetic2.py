@@ -192,7 +192,8 @@ def _make_gaussian_mutation(gene_space, mutation_probability, mutation_sigma_fra
 def run_genetic_search(advertisers, polynomial_degree, k=1,
                        num_generations=500, sol_per_pop=50, num_parents_mating=15,
                        mutation_probability=0.25, mutation_sigma_frac=0.15,
-                       range_multiplier=3.0, seed=None):
+                       range_multiplier=3.0, seed=None,
+                       initial_solution=None):
     """Genetic algorithm optimizer in original (v, e) space.
 
     Parameters
@@ -209,6 +210,10 @@ def run_genetic_search(advertisers, polynomial_degree, k=1,
                            larger values (e.g. 0.3) give more exploration.
     range_multiplier     : float — gene range = ±multiplier × std_v / mean(|e|^k)
     seed                 : int or None — random seed for reproducibility
+    initial_solution     : list of float or None — seed one population member with these
+                           coefficients (remaining members are randomly initialised).
+                           Length must equal polynomial_degree + 1.  If longer, the extra
+                           trailing coefficients are dropped; if shorter, zeros are appended.
 
     Returns
     -------
@@ -223,12 +228,25 @@ def run_genetic_search(advertisers, polynomial_degree, k=1,
     gene_space = _compute_gene_space(advertisers, polynomial_degree, range_multiplier)
 
     space_str = '  '.join(
-        f'β{i}∈[{g["low"]:.4g},{g["high"]:.4g}] σ={mutation_sigma_frac*(g["high"]-g["low"]):.4g}'
+        f'b{i} in [{g["low"]:.4g},{g["high"]:.4g}] sigma={mutation_sigma_frac*(g["high"]-g["low"]):.4g}'
         for i, g in enumerate(gene_space)
     )
     print(f"Gene spaces & mutation sigmas: {space_str}")
     print(f"Genetic search: {d} genes, pop={sol_per_pop}, "
           f"{num_generations} generations, {num_parents_mating} parents mating")
+
+    # Build initial population — optionally seed first member from initial_solution
+    lows  = np.array([g['low']  for g in gene_space])
+    highs = np.array([g['high'] for g in gene_space])
+    random_rows = rng.uniform(lows, highs, size=(sol_per_pop, d))
+
+    if initial_solution is not None:
+        seed_row = np.zeros(d)
+        n_shared = min(len(initial_solution), d)
+        seed_row[:n_shared] = initial_solution[:n_shared]
+        seed_row = np.clip(seed_row, lows, highs)
+        random_rows[0] = seed_row
+        print(f"Warm-start: seeding population[0] = {[f'{c:.4g}' for c in seed_row]}")
 
     N = len(preprocessed)
     trajectory = []
@@ -251,7 +269,7 @@ def run_genetic_search(advertisers, polynomial_degree, k=1,
             trajectory.append(solution.tolist())
         print(f"  Gen {ga_instance.generations_completed:4d}  "
               f"welfare={fitness:.6f}  "
-              f"β={[f'{c:.4g}' for c in best]}")
+              f"b={[f'{c:.4g}' for c in best]}")
 
     mutation_fn = _make_gaussian_mutation(
         gene_space, mutation_probability, mutation_sigma_frac, rng
@@ -262,9 +280,9 @@ def run_genetic_search(advertisers, polynomial_degree, k=1,
         num_parents_mating=num_parents_mating,
         fitness_func=fitness_batch,
         fitness_batch_size=sol_per_pop,
-        sol_per_pop=sol_per_pop,
         num_genes=d,
         gene_space=gene_space,
+        initial_population=random_rows,
         parent_selection_type='tournament',
         crossover_type='single_point',
         mutation_type=mutation_fn,
@@ -284,7 +302,7 @@ def run_genetic_search(advertisers, polynomial_degree, k=1,
         f'{c:.6f}' if i == 0 else f'{c:.6f}*e^{i}'
         for i, c in enumerate(best_coeffs)
     )
-    print(f"Best tau: τ(e) = {poly_str}")
+    print(f"Best tau: tau(e) = {poly_str}")
     print(f"Best welfare:  {best_fitness:.6f}")
 
     return best_coeffs, float(best_fitness), trajectory
