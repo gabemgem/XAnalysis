@@ -247,10 +247,17 @@ def _ext_cost_map(records):
     return {round(r['externality_cost'], 10): r['externality_cost'] for r in records}
 
 
+def _single_zeta(all_results):
+    """True when all records share exactly one unique externality_cost."""
+    seen = {round(r['externality_cost'], 10) for recs in all_results.values() for r in recs}
+    return len(seen) == 1
+
+
 # ─── Grouped-bar welfare distributions ────────────────────────────────────────
 
 def plot_welfare_distributions_grouped(all_results, fig_dir):
     """Grid rows=ext_costs x cols=[total, adv, ext]; grouped side-by-side bars per bucket."""
+    single_zeta = _single_zeta(all_results)
     col_specs = [
         ('vcg_welfare',     'vcga_welfare',     'ra_welfare',     'Total Welfare'),
         ('vcg_adv_welfare', 'vcga_adv_welfare', 'ra_adv_welfare', 'Valuation (v)'),
@@ -295,13 +302,13 @@ def plot_welfare_distributions_grouped(all_results, fig_dir):
                 ra_counts,   _ = np.histogram(ra_vals,   bins=bins)
 
                 ax.bar(centers - bar_w, vcg_counts,  width=bar_w, color='steelblue',
-                       label='VCG',  alpha=0.85)
+                       label='vcg',  alpha=0.85)
                 ax.bar(centers,         vcga_counts, width=bar_w, color='firebrick',
-                       label='VCGA', alpha=0.85)
+                       label='vcgPA', alpha=0.85)
                 ax.bar(centers + bar_w, ra_counts,   width=bar_w, color='seagreen',
-                       label='RA',   alpha=0.85)
+                       label='vcgRA',   alpha=0.85)
 
-                ax.set_title(f'zeta={ext_cost:.4g} -- {col_title}')
+                ax.set_title(col_title if single_zeta else f'ζ={ext_cost:.4g} -- {col_title}')
                 if col_idx == 0:
                     ax.set_ylabel('Count')
                 if row_idx == 0 and col_idx == 0:
@@ -320,7 +327,7 @@ def plot_welfare_distributions_grouped(all_results, fig_dir):
 # ─── Tau degree comparison annotated with expected welfare ─────────────────────
 
 def plot_tau_degree_comparison(all_results, degrees, fig_dir, k_values, num_items_list,
-                               percentile=95, empirical=False):
+                               percentile=85, empirical=False):
     """Per (k, n): one subplot per ext_cost, overlay tau per degree with expected welfare."""
     # Simulated mode: zoom out slightly to show broader distribution
     eff_pct = percentile if empirical else 100
@@ -360,10 +367,10 @@ def plot_tau_degree_comparison(all_results, degrees, fig_dir, k_values, num_item
                             label=f'deg {degree}  ΔW={delta_w:+.4g}')
 
                 ax.set_xlim(e_lo, e_hi)
-                ax.set_ylim(0, v_hi * 1.05)
+                ax.set_ylim(0, v_hi)
                 # Only show zeta in subplot title when there are multiple ext_costs
                 if num_ext > 1:
-                    ax.set_title(f'zeta={ref_rec["externality_cost"]:.4g}')
+                    ax.set_title(f'ζ={ref_rec["externality_cost"]:.4g}')
                 ax.set_xlabel('e')
                 ax.set_ylabel('v')
                 ax.legend(loc='best')
@@ -388,6 +395,7 @@ def plot_tau_by_k(all_results, fig_dir, degree=1, empirical=False, percentile=95
     num_items_list = sorted({n for k, d, n in all_results})
     deg_name       = _DEGREE_NAMES.get(degree, f'Degree {degree}')
     eff_pct        = percentile if empirical else 100
+    single_zeta    = _single_zeta(all_results)
 
     for num_items in num_items_list:
         ec_map = {}
@@ -439,11 +447,11 @@ def plot_tau_by_k(all_results, fig_dir, degree=1, empirical=False, percentile=95
                 ax.set_ylabel('v')
 
             ec_str = f'{ext_cost:.6g}'.replace('.', 'p').replace('-', 'm')
-            fig.suptitle(
-                f'{deg_name} Threshold by k  [n={num_items}, zeta={ext_cost:.4g}]',
-            )
+            zeta_str  = '' if single_zeta else f', ζ={ext_cost:.4g}'
+            zeta_fname = '' if single_zeta else f'_ζ{ec_str}'
+            fig.suptitle(f'{deg_name} Threshold by k  [n={num_items}{zeta_str}]')
             fig.tight_layout()
-            path = os.path.join(fig_dir, f'tau_by_k_n{num_items}_zeta{ec_str}.png')
+            path = os.path.join(fig_dir, f'tau_by_k_n{num_items}{zeta_fname}.png')
             fig.savefig(path, dpi=_DPI, bbox_inches='tight')
             plt.close(fig)
             print(f"Saved: {path}")
@@ -460,6 +468,7 @@ def plot_tau_by_n(all_results, fig_dir, degree=1, empirical=False, percentile=95
     num_items_list = sorted({n for k, d, n in all_results})
     deg_name       = _DEGREE_NAMES.get(degree, f'Degree {degree}')
     eff_pct        = percentile if empirical else 100
+    single_zeta    = _single_zeta(all_results)
 
     for k in k_values:
         ec_map = {}
@@ -511,11 +520,11 @@ def plot_tau_by_n(all_results, fig_dir, degree=1, empirical=False, percentile=95
                 ax.set_ylabel('v')
 
             ec_str = f'{ext_cost:.6g}'.replace('.', 'p').replace('-', 'm')
-            fig.suptitle(
-                f'{deg_name} Threshold by n  [k={k}, zeta={ext_cost:.4g}]',
-            )
+            zeta_str  = '' if single_zeta else f', ζ={ext_cost:.4g}'
+            zeta_fname = '' if single_zeta else f'_ζ{ec_str}'
+            fig.suptitle(f'{deg_name} Threshold by n  [k={k}{zeta_str}]')
             fig.tight_layout()
-            path = os.path.join(fig_dir, f'tau_by_n_k{k}_zeta{ec_str}.png')
+            path = os.path.join(fig_dir, f'tau_by_n_k{k}{zeta_fname}.png')
             fig.savefig(path, dpi=_DPI, bbox_inches='tight')
             plt.close(fig)
             print(f"Saved: {path}")
@@ -525,6 +534,7 @@ def plot_tau_by_n(all_results, fig_dir, degree=1, empirical=False, percentile=95
 
 def plot_tau_grid(all_results, fig_dir, max_fns=200, zoomed=False, percentile=99):
     """For each (k, degree, n): grid of tested and optimal tau functions per ext_cost."""
+    single_zeta = _single_zeta(all_results)
     for (k, degree, num_items), records in all_results.items():
         records_sorted = sorted(records, key=lambda r: r['externality_cost'])
         n = len(records_sorted)
@@ -560,7 +570,8 @@ def plot_tau_grid(all_results, fig_dir, max_fns=200, zoomed=False, percentile=99
 
             ax.set_xlim(e_lo, e_hi)
             ax.set_ylim(0, v_hi * 1.05)
-            ax.set_title(f'zeta={rec["externality_cost"]:.4g}')
+            if not single_zeta:
+                ax.set_title(f'ζ={rec["externality_cost"]:.4g}')
             ax.set_xlabel('Externality e')
             ax.set_ylabel('Threshold v')
 
@@ -585,6 +596,7 @@ def plot_tau_grid_by_degree(all_results, fig_dir, max_fns=200, zoomed=False, per
     k_values       = sorted({k for k, _d, _n in all_results})
     degrees        = sorted({d for _k, d, _n in all_results})
     num_items_list = sorted({n for _k, _d, n in all_results})
+    single_zeta    = _single_zeta(all_results)
 
     for k in k_values:
         for num_items in num_items_list:
@@ -642,13 +654,15 @@ def plot_tau_grid_by_degree(all_results, fig_dir, max_fns=200, zoomed=False, per
                 suffix = ' (zoomed)' if zoomed else ''
                 ec_str = f'{ext_cost:.6g}'.replace('.', 'p').replace('-', 'm')
                 sfx = '_zoomed' if zoomed else ''
+                zeta_str  = '' if single_zeta else f', ζ={ext_cost:.4g}'
+                zeta_fname = '' if single_zeta else f'_ζ{ec_str}'
                 fig.suptitle(
                     f'Tested & Optimal Threshold by Degree{suffix}  '
-                    f'[k={k}, n={num_items}, zeta={ext_cost:.4g}]',
+                    f'[k={k}, n={num_items}{zeta_str}]',
                 )
                 fig.tight_layout()
                 path = os.path.join(
-                    fig_dir, f'tau_by_degree{sfx}_k{k}_n{num_items}_zeta{ec_str}.png')
+                    fig_dir, f'tau_by_degree{sfx}_k{k}_n{num_items}{zeta_fname}.png')
                 fig.savefig(path, dpi=_DPI, bbox_inches='tight')
                 plt.close(fig)
                 print(f"Saved: {path}")
@@ -660,6 +674,7 @@ def plot_penalty_grid(all_results, fig_dir, percentile=95, empirical=False):
     """For each (k, degree, n): grid of tau + R(e) + -e penalty plots per ext_cost."""
     # Empirical data can have large tails; zoom the y-axis in more tightly
     eff_pct = 90 if empirical else 100
+    single_zeta = _single_zeta(all_results)
 
     for (k, degree, num_items), records in all_results.items():
         records_sorted = sorted(records, key=lambda r: r['externality_cost'])
@@ -695,7 +710,8 @@ def plot_penalty_grid(all_results, fig_dir, percentile=95, empirical=False):
             ax.set_xlim(e_lo, e_hi)
             ax.set_ylim(y_lo_plot, y_hi_plot)
 
-            ax.set_title(f'zeta={rec["externality_cost"]:.4g}')
+            if not single_zeta:
+                ax.set_title(f'ζ={rec["externality_cost"]:.4g}')
             ax.set_xlabel('Externality e')
             ax.set_ylabel('Value / Penalty')
 
@@ -723,7 +739,8 @@ def plot_penalty_by_degree(all_results, fig_dir, percentile=95, empirical=False)
     k_values       = sorted({k for k, _, _ in all_results})
     degrees        = sorted({d for _, d, _ in all_results})
     num_items_list = sorted({n for _, _, n in all_results})
-    eff_pct        = 90 if empirical else 100
+    eff_pct        = 90 if empirical else 99.5
+    single_zeta    = _single_zeta(all_results)
 
     for k in k_values:
         for num_items in num_items_list:
@@ -735,6 +752,22 @@ def plot_penalty_by_degree(all_results, fig_dir, percentile=95, empirical=False)
 
             for ec_key in sorted(ec_map):
                 ext_cost = ec_map[ec_key]
+
+                # Shared axis limits computed from the linear (reference degree) record
+                ref_rec = _find_rec(all_results, k, avail[0], num_items, ext_cost)
+                if ref_rec is None:
+                    continue
+                ref_e = np.array([a[1] for bs in ref_rec['bidder_sets'] for a in bs])
+                ref_v = np.array([a[0] for bs in ref_rec['bidder_sets'] for a in bs])
+                e_lo, e_hi = _e_range(ref_e, eff_pct)
+                ref_v_hi = float(np.percentile(ref_v, eff_pct))
+                e_line_ref = np.linspace(e_lo, e_hi, 300)
+                y_tau_ref = np.array([_eval_poly(ref_rec['tau_coeffs'], e) for e in e_line_ref])
+                R_ref = _participant_penalty_curve(
+                    e_line_ref, ref_rec['tau_coeffs'], ref_rec['pa_payments'])
+                y_all_ref = np.concatenate([y_tau_ref, R_ref, -e_line_ref, ref_v])
+                shared_y_lo = min(float(np.percentile(y_all_ref, 100 - eff_pct)), 0.0)
+                shared_y_hi = max(float(np.percentile(y_all_ref, eff_pct)), ref_v_hi)
 
                 fig, axs = plt.subplots(1, len(avail),
                                         figsize=(4.5 * len(avail), 4.5),
@@ -750,8 +783,6 @@ def plot_penalty_by_degree(all_results, fig_dir, percentile=95, empirical=False)
 
                     all_e = np.array([a[1] for bs in rec['bidder_sets'] for a in bs])
                     all_v = np.array([a[0] for bs in rec['bidder_sets'] for a in bs])
-                    e_lo, e_hi = _e_range(all_e, eff_pct)
-                    v_hi = float(np.percentile(all_v, eff_pct))
 
                     _scatter_sample(all_e, all_v, ax, rng)
                     e_line = np.linspace(e_lo, e_hi, 300)
@@ -766,28 +797,26 @@ def plot_penalty_by_degree(all_results, fig_dir, percentile=95, empirical=False)
                     p3, = ax.plot(e_line, neg_e, color='tab:green', linewidth=1.5,
                                   linestyle='--', zorder=3)
 
-                    y_all = np.concatenate([y_tau, R, neg_e, all_v])
-                    y_lo_plot = min(float(np.percentile(y_all, 100 - eff_pct)), 0.0)
-                    y_hi_plot = max(float(np.percentile(y_all, eff_pct)), v_hi) * 1.05
                     ax.set_xlim(e_lo, e_hi)
-                    ax.set_ylim(y_lo_plot, y_hi_plot)
+                    ax.set_ylim(shared_y_lo, shared_y_hi)
 
                     ax.set_title(_DEGREE_NAMES.get(degree, f'Degree {degree}'))
                     ax.set_xlabel('Externality e')
-                    ax.set_ylabel('Value / Penalty')
+                    ax.set_ylabel('Valuation v')
 
                     if di == 0:
                         ax.legend([p1, p2, p3],
                                   ['tau (threshold)', 'r(e) (participant)', 'R(e) (recipient)'])
 
                 ec_str = f'{ext_cost:.6g}'.replace('.', 'p').replace('-', 'm')
+                zeta_str  = '' if single_zeta else f', ζ={ext_cost:.4g}'
+                zeta_fname = '' if single_zeta else f'_ζ{ec_str}'
                 fig.suptitle(
-                    f'Threshold & Penalty by Degree  '
-                    f'[k={k}, n={num_items}, zeta={ext_cost:.4g}]',
+                    f'Threshold & Penalty by Degree  [k={k}, n={num_items}{zeta_str}]',
                 )
                 fig.tight_layout()
                 path = os.path.join(
-                    fig_dir, f'penalty_by_degree_k{k}_n{num_items}_zeta{ec_str}.png')
+                    fig_dir, f'penalty_by_degree_k{k}_n{num_items}{zeta_fname}.png')
                 fig.savefig(path, dpi=_DPI, bbox_inches='tight')
                 plt.close(fig)
                 print(f"Saved: {path}")
@@ -801,7 +830,7 @@ def plot_welfare_comparison(all_results, fig_dir, empirical=False, show_ci=True)
         records_sorted = sorted(records, key=lambda r: r['externality_cost'])
 
         # x-axis: convert per-impression/rating to per-action
-        ext_costs = [r['externality_cost'] * _ZETA_SCALE for r in records_sorted]
+        ext_costs = [r['externality_cost'] for r in records_sorted]
 
         _vcg  = [_welfare_ci(r['vcg_welfare'])  for r in records_sorted]
         _vcga = [_welfare_ci(r['vcga_welfare']) for r in records_sorted]
@@ -828,9 +857,9 @@ def plot_welfare_comparison(all_results, fig_dir, empirical=False, show_ci=True)
             all_lo = np.concatenate([vcg_m - vcg_ci, vcga_m - vcga_ci, ra_m - ra_ci])
             all_hi = np.concatenate([vcg_m + vcg_ci, vcga_m + vcga_ci, ra_m + ra_ci])
         else:
-            ax.plot(ext_costs, vcg_m,  marker='o', color='steelblue', label='VCG (unconstrained)')
-            ax.plot(ext_costs, vcga_m, marker='s', color='firebrick', label='Participant Audit')
-            ax.plot(ext_costs, ra_m,   marker='^', color='seagreen',  label='Recipient Audit')
+            ax.plot(ext_costs, vcg_m,  marker='o', color='steelblue', label='vcg')
+            ax.plot(ext_costs, vcga_m, marker='s', color='firebrick', label='vcgPA')
+            ax.plot(ext_costs, ra_m,   marker='^', color='seagreen',  label='vcgRA')
             all_lo = np.concatenate([vcg_m, vcga_m, ra_m])
             all_hi = all_lo
 
@@ -841,7 +870,7 @@ def plot_welfare_comparison(all_results, fig_dir, empirical=False, show_ci=True)
         if y_lo - pad <= 0 <= y_hi + pad:
             ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.35)
 
-        ax.set_xlabel('Externality Cost per Action (zeta)')
+        ax.set_xlabel('Externality Cost (ζ)')
         ax.set_ylabel('Expected Welfare')
         ax.legend(loc='best')
 
@@ -852,6 +881,15 @@ def plot_welfare_comparison(all_results, fig_dir, empirical=False, show_ci=True)
         fig.savefig(path, dpi=_DPI, bbox_inches='tight')
         plt.close(fig)
         print(f"Saved: {path}")
+
+        print(f"  Welfare gains over VCG  [k={k}, degree={degree}, n={num_items}]")
+        print(f"  {'zeta':>10}  {'VCGA-VCG':>12}  {'VCGA%':>8}  {'RA-VCG':>12}  {'RA%':>8}")
+        for ec, vm, pam, ram in zip(ext_costs, vcg_m, vcga_m, ra_m):
+            pa_delta = pam - vm
+            ra_delta = ram - vm
+            pa_pct = 100 * pa_delta / abs(vm) if vm != 0 else float('nan')
+            ra_pct = 100 * ra_delta / abs(vm) if vm != 0 else float('nan')
+            print(f"  {ec:>10.4g}  {pa_delta:>+12.4g}  {pa_pct:>7.2f}%  {ra_delta:>+12.4g}  {ra_pct:>7.2f}%")
 
 
 # ─── Welfare vs k and n (simulated only) ──────────────────────────────────────
@@ -971,11 +1009,27 @@ def parse_args():
                    help='Omit 95%% confidence interval error bars from welfare plots.')
     p.add_argument('--font-scale', type=float, default=1.2,
                    help='Scale factor applied to all figure text sizes (default: 1.2).')
+    g = p.add_argument_group(
+        'plot selection',
+        'Run only the specified plots. If none are given, all plots are generated.')
+    g.add_argument('--welfare-dist',      action='store_true', help='Grouped welfare distribution histograms')
+    g.add_argument('--tau-degree',        action='store_true', help='Tau lines by degree with welfare annotations')
+    g.add_argument('--tau-grid',          action='store_true', help='Tested & optimal tau grid')
+    g.add_argument('--tau-grid-zoomed',   action='store_true', help='Tested & optimal tau grid (zoomed)')
+    g.add_argument('--tau-by-degree',     action='store_true', help='Tau by degree (zeta fixed)')
+    g.add_argument('--tau-by-k',          action='store_true', help='Linear tau by k (n fixed)')
+    g.add_argument('--tau-by-n',          action='store_true', help='Linear tau by n (k fixed)')
+    g.add_argument('--penalty-grid',      action='store_true', help='Penalty curves grid')
+    g.add_argument('--penalty-by-degree', action='store_true', help='Penalty curves by degree (zeta fixed)')
+    g.add_argument('--welfare',           action='store_true', help='Expected welfare vs externality cost')
+    g.add_argument('--welfare-kn',        action='store_true', help='Expected welfare vs k and n (simulated only)')
     return p.parse_args()
 
 
 def run_one_dir(sweep_dir, figures_subdir, data_path=None, base_seed=1234,
-                num_test_auctions=2000, empirical=False, show_ci=True, font_scale=1.2):
+                num_test_auctions=2000, empirical=False, show_ci=True, font_scale=1.2,
+                plots=None):
+    """plots: set of plot names to run, or None to run all."""
     _apply_font_scale(font_scale)
     fig_dir = os.path.join(sweep_dir, figures_subdir)
     os.makedirs(fig_dir, exist_ok=True)
@@ -993,36 +1047,51 @@ def run_one_dir(sweep_dir, figures_subdir, data_path=None, base_seed=1234,
     print(f"Output figures : {fig_dir}")
     print(f"Mode           : {'empirical' if empirical else 'simulated'}")
 
-    print("\n--- Grouped welfare distribution histograms ---")
-    plot_welfare_distributions_grouped(all_results, fig_dir)
+    def _run(name):
+        return plots is None or name in plots
 
-    print("\n--- Tau degree comparison with welfare annotations ---")
-    plot_tau_degree_comparison(all_results, degrees, fig_dir, k_values, num_items_list,
-                               empirical=empirical)
+    if _run('welfare_dist'):
+        print("\n--- Grouped welfare distribution histograms ---")
+        plot_welfare_distributions_grouped(all_results, fig_dir)
 
-    print("\n--- Tau grid (tested and optimal tau) ---")
-    plot_tau_grid(all_results, fig_dir, zoomed=False)
-    plot_tau_grid(all_results, fig_dir, zoomed=True)
+    if _run('tau_degree'):
+        print("\n--- Tau degree comparison with welfare annotations ---")
+        plot_tau_degree_comparison(all_results, degrees, fig_dir, k_values, num_items_list,
+                                   empirical=empirical)
 
-    print("\n--- Tau by degree (zeta fixed, scatter + tested + optimal) ---")
-    plot_tau_grid_by_degree(all_results, fig_dir)
+    if _run('tau_grid'):
+        print("\n--- Tau grid (tested and optimal tau) ---")
+        plot_tau_grid(all_results, fig_dir, zoomed=False)
 
-    print("\n--- Linear tau by k (n fixed, scatter + tau) ---")
-    plot_tau_by_k(all_results, fig_dir, degree=1, empirical=empirical)
+    if _run('tau_grid_zoomed'):
+        print("\n--- Tau grid zoomed ---")
+        plot_tau_grid(all_results, fig_dir, zoomed=True)
 
-    print("\n--- Linear tau by n (k fixed, scatter + tau) ---")
-    plot_tau_by_n(all_results, fig_dir, degree=1, empirical=empirical)
+    if _run('tau_by_degree'):
+        print("\n--- Tau by degree (zeta fixed, scatter + tested + optimal) ---")
+        plot_tau_grid_by_degree(all_results, fig_dir)
 
-    print("\n--- Penalty grid (tau, R(e), -e) ---")
-    plot_penalty_grid(all_results, fig_dir, empirical=empirical)
+    if _run('tau_by_k'):
+        print("\n--- Linear tau by k (n fixed, scatter + tau) ---")
+        plot_tau_by_k(all_results, fig_dir, degree=1, empirical=empirical)
 
-    print("\n--- Penalty curves by degree (zeta fixed, scatter + tau + R(e) + -e) ---")
-    plot_penalty_by_degree(all_results, fig_dir, empirical=empirical)
+    if _run('tau_by_n'):
+        print("\n--- Linear tau by n (k fixed, scatter + tau) ---")
+        plot_tau_by_n(all_results, fig_dir, degree=1, empirical=empirical)
 
-    print("\n--- Expected welfare vs externality cost ---")
-    plot_welfare_comparison(all_results, fig_dir, empirical=empirical, show_ci=show_ci)
+    if _run('penalty_grid'):
+        print("\n--- Penalty grid (tau, R(e), -e) ---")
+        plot_penalty_grid(all_results, fig_dir, empirical=empirical)
 
-    if not empirical:
+    if _run('penalty_by_degree'):
+        print("\n--- Penalty curves by degree (zeta fixed, scatter + tau + R(e) + -e) ---")
+        plot_penalty_by_degree(all_results, fig_dir, empirical=empirical)
+
+    if _run('welfare'):
+        print("\n--- Expected welfare vs externality cost ---")
+        plot_welfare_comparison(all_results, fig_dir, empirical=empirical, show_ci=show_ci)
+
+    if _run('welfare_kn') and not empirical:
         print("\n--- Expected welfare vs k and n (simulated) ---")
         plot_welfare_kn_comparison(all_results, fig_dir)
 
@@ -1040,13 +1109,28 @@ def main():
         print(f"\n{'='*60}")
         print(f"Processing: {sweep_dir}")
         print(f"{'='*60}")
+        _flag_map = {
+            'welfare_dist':      args.welfare_dist,
+            'tau_degree':        args.tau_degree,
+            'tau_grid':          args.tau_grid,
+            'tau_grid_zoomed':   args.tau_grid_zoomed,
+            'tau_by_degree':     args.tau_by_degree,
+            'tau_by_k':          args.tau_by_k,
+            'tau_by_n':          args.tau_by_n,
+            'penalty_grid':      args.penalty_grid,
+            'penalty_by_degree': args.penalty_by_degree,
+            'welfare':           args.welfare,
+            'welfare_kn':        args.welfare_kn,
+        }
+        requested = {name for name, flag in _flag_map.items() if flag} or None
         run_one_dir(sweep_dir, args.figures_subdir,
                     data_path=args.data,
                     base_seed=args.base_seed,
                     num_test_auctions=args.num_test_auctions,
                     empirical=args.empirical,
                     show_ci=not args.no_ci,
-                    font_scale=args.font_scale)
+                    font_scale=args.font_scale,
+                    plots=requested)
 
 
 if __name__ == '__main__':
