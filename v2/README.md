@@ -6,89 +6,131 @@ Advertiser values (`v`) are proxied by tweet engagement (actions per month) and 
 
 ---
 
-## Files
+## Current Analysis Workflow
 
-### Data Pipeline
+The final analysis for the EC 2025 paper uses the following scripts. Start here.
+
+### 1. Data Pipeline
 
 **[get_tweets.ipynb](get_tweets.ipynb)**
-Fetches tweets from the Twitter/X API using Tweepy and stores them in a MySQL database. Reads tweet IDs from a pickle file, batches requests in groups of 100, and respects rate limits with a 70-second sleep between batches.
+Fetches tweets from the Twitter/X API using Tweepy and stores them in a MySQL database. Reads tweet IDs from a pickle file, batches requests in groups of 100, and respects rate limits.
 
 **[create_distribution.ipynb](create_distribution.ipynb)**
-Queries the MySQL database for tweets, Community Notes, and note ratings. Computes an externality score for each tweet by combining note classifications (misleading vs. not) with helpfulness ratings from raters. Normalizes scores by impression count and exports the final dataset as `full_tweets.csv`, which is the primary real-data input for the auction optimizer.
+Queries the database for tweets, Community Notes, and note ratings. Computes an externality score for each tweet by combining note classifications with helpfulness ratings, normalizes by impression count, and exports `full_tweets.csv` — the primary data input for the optimizer.
 
 **[full_tweets.csv](full_tweets.csv)**
-Processed tweet dataset produced by `create_distribution.ipynb`. Each row is a tweet with columns including `v_score` (advertiser value, proportional to actions per month) and `e_score` (externality, normalized Community Notes signal per 1000 impressions per month).
+Processed tweet dataset. Each row is a tweet with `v_score` (advertiser value, proportional to actions per month) and `e_score` (externality, normalized Community Notes signal per month).
 
-### Synthetic Distributions
+### 2. Optimization Sweep
 
-**[alternate_distributions.ipynb](alternate_distributions.ipynb)**
-Generates synthetic 2D advertiser (e, v) distributions for controlled experiments. Produces six named distributions saved to `data/samples/`:
-- `a` — single-modal normal
-- `b` — two-modal side by side
-- `c` / `d` — two-modal diagonal (/ and \\)
-- `e` — two-modal stacked
-- `f` — four-modal
+**[Collateralized_Auction_genetic2.py](Collateralized_Auction_genetic2.py)**
+Core optimizer. Implements `run_genetic_search()`, which uses a genetic algorithm (PyGAD) to search for optimal τ polynomial coefficients that maximize social welfare across auction draws. Supports warm-starting via `initial_solution`. This module is called by `run_sweep_genetic2.py` and is not run directly.
 
-Scatter and KDE density plots are saved to `data/figures/`.
+**[run_sweep_genetic2.py](run_sweep_genetic2.py)**
+Sweep runner. Iterates over all combinations of `k` (slots), polynomial degree, number of bidders `n`, and externality cost ζ, calling `Collateralized_Auction_genetic2.py` for each cell. Results are saved to `output/sweep_<name>_<timestamp>/sweep_data.pkl` along with a per-run `README.md`.
 
-### Auction Optimizer
+```bash
+python run_sweep_genetic2.py --name myrun --data full_tweets.csv
+```
 
-**[Collateralized_Auction_genetic.py](Collateralized_Auction_genetic.py)**
-Exploratory, cell-structured script (percent-cell format) for running the genetic algorithm auction optimizer interactively. Defines:
-- `run_auction` — simulates one VCG auction and one collateralized auction for a set of advertisers
-- `tau` — polynomial threshold function evaluated as `v ≥ τ(e, coefficients)`
-- `run_ga` — wraps PyGAD to search for optimal τ coefficients by maximizing average collateralized welfare across many auction draws
-- Plotting utilities (`plot_auctions`, `plot_advertisers`)
+### 3. Analysis and Figures
 
-Coefficients are searched in log-space (`ln_coeffs_to_coeffs`) to allow the GA to explore a wider dynamic range.
+**[post_optimization_analysis.py](post_optimization_analysis.py)**
+Loads a completed sweep and generates all publication-ready figures. Accepts a sweep directory or path prefix; when given a prefix, processes all matching directories.
 
-**[Collateralized_Auction_genetic_script.py](Collateralized_Auction_genetic_script.py)**
-Production CLI version of the optimizer, designed for submission to an HPC cluster. Key differences from the exploratory script:
-- Accepts command-line arguments (`--k`, `--externality-cost`, `--polynomial-degree`, `--data`, etc.)
-- Normalizes `v` and `e` jointly to `[-1, 1]` before running the GA, then converts the best τ coefficients back to original space using `NegOneOneScaler.poly_from_normalized`
-- Saves results to `data/output/ga_results_{id}.pkl`
-- Includes a `NegOneOneScaler` class with full forward/inverse polynomial coefficient transforms via Horner's rule
+Key flags:
+- `--empirical` — empirical (XNP400) mode; adjusts axis limits and skips simulated-only plots
+- `--no-ci` — omit 95% confidence interval error bars
+- `--font-scale N` — scale all figure text (default 1.2)
+- `--data CSV` — recompute welfare from a consistent held-out test set
 
-### Cluster Scripts
+Individual plots can be generated selectively to avoid regenerating everything:
+```bash
+python post_optimization_analysis.py output/sweep_myrun --welfare --penalty-by-degree
+python post_optimization_analysis.py output/sweep_myrun --tau-by-k --empirical
+```
 
-**[cluster_run.sh](cluster_run.sh)**
-SGE array job script that submits one distribution file and one polynomial degree to the cluster. Runs 7 parallel tasks (one per externality cost variation: 0.001, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1). Uses more generations (4000) for polynomial degrees > 1.
+Available plot flags: `--welfare-dist`, `--tau-degree`, `--tau-grid`, `--tau-grid-zoomed`, `--tau-by-degree`, `--tau-by-k`, `--tau-by-n`, `--penalty-grid`, `--penalty-by-degree`, `--welfare`, `--welfare-kn`.
 
-Usage: `qsub cluster_run.sh <data_file.csv> <polynomial_degree>`
+### 4. Descriptive Statistics
 
-**[cluster_run_all.sh](cluster_run_all.sh)**
-Convenience script that submits all combinations of distributions (0, a–f) × polynomial degrees (1, 2, 3) by calling `cluster_run.sh` repeatedly. Run this to kick off a full sweep.
+**[create_descriptive_stats.py](create_descriptive_stats.py)**
+Computes and saves summary statistics, correlation tables, and figures for `full_tweets.csv`. Outputs to `output/descriptive_stats/`.
 
-### Analysis & Plots
+**[csv_to_latex.py](csv_to_latex.py)**
+Converts the CSV tables produced by `create_descriptive_stats.py` into booktabs-formatted LaTeX table environments. Writes a single `.tex` file that can be `\input{}`-ed directly.
 
-**[Create_Plots.ipynb](Create_Plots.ipynb)**
-Loads GA result pickle files from `data/output/` and generates all figures. Produces:
-- Scatter plots of advertiser vs. externality welfare across externality cost and polynomial degree
-- Line plots of welfare change (advertiser, externality, total) vs. externality cost
-- Side-by-side visualizations of optimal affine/quadratic/cubic τ functions overlaid on advertiser scatter plots, for each distribution
-- Plots of the full space of τ functions explored during GA search
-- Welfare distribution histograms comparing collateralized vs. VCG outcomes
+```bash
+python csv_to_latex.py --input-dir output/descriptive_stats/tables
+```
 
-**[ev_density_plot.png](ev_density_plot.png)**
-KDE density contour plot of the empirical (externality, advertiser value) joint distribution from real tweet data, saved by `Create_Plots.ipynb`.
+### 5. Supplemental
 
-### Reference
-
-**[Audited_Auctions_EC_25_Supplemental-1.pdf](Audited_Auctions_EC_25_Supplemental-1.pdf)**
-Supplemental document for the associated research paper submitted to EC 2025.
+**[supplemental/](supplemental/)**
+LaTeX source for the EC 2025 supplemental document, including the methodology and data collection description.
 
 ---
 
-## Workflow
+## Complete Workflow
 
 ```
-get_tweets.ipynb          → MySQL DB
-create_distribution.ipynb → full_tweets.csv
-alternate_distributions.ipynb → data/samples/*.csv
+get_tweets.ipynb              → MySQL DB
+create_distribution.ipynb     → full_tweets.csv
+create_descriptive_stats.py   → output/descriptive_stats/
 
-cluster_run_all.sh
-  └─ cluster_run.sh (×21 jobs)
-       └─ Collateralized_Auction_genetic_script.py → data/output/ga_results_*.pkl
+run_sweep_genetic2.py
+  └─ Collateralized_Auction_genetic2.py → output/sweep_<name>/sweep_data.pkl
 
-Create_Plots.ipynb        → data/figures/*.png
+post_optimization_analysis.py → output/sweep_<name>/figures/
+
+csv_to_latex.py               → output/descriptive_stats/tables/tables.tex
 ```
+
+---
+
+## Earlier Approaches
+
+The scripts below represent earlier iterations of the optimizer and are kept for reference. They were **not used in the final EC 2025 analysis**.
+
+### Grid Search
+
+**[Collateralized_Auction_grid_search.py](Collateralized_Auction_grid_search.py)**
+Exhaustive vectorized grid search over polynomial coefficient space. Computes welfare for all coefficient combinations using matrix multiplication (`B @ E^T`); relies on BLAS threading rather than joblib. Useful for low-degree polynomials where the search space is small enough to enumerate.
+
+### SGD-Based Optimizers
+
+**[Collateralized_Auction_sgd.py](Collateralized_Auction_sgd.py)**
+Gradient-based optimizer using stochastic gradient descent on τ coefficients.
+
+**[Collateralized_Auction_sgd_bb.py](Collateralized_Auction_sgd_bb.py)**
+SGD variant with Barzilai–Borwein adaptive step size.
+
+### First-Generation Genetic Algorithm
+
+**[Collateralized_Auction_genetic.py](Collateralized_Auction_genetic.py)**
+Exploratory, percent-cell-structured script for running the GA interactively. Uses log-space coefficient search (`ln_coeffs_to_coeffs`). Superseded by `Collateralized_Auction_genetic2.py`.
+
+**[Collateralized_Auction_genetic_script.py](Collateralized_Auction_genetic_script.py)**
+CLI version of the first-generation GA designed for HPC cluster submission. Uses joint `[-1, 1]` normalization of `v` and `e` before running the GA, then converts coefficients back to original space. Superseded by `run_sweep_genetic2.py` + `Collateralized_Auction_genetic2.py`.
+
+### HPC Cluster Scripts (first-generation)
+
+**[cluster_run.sh](cluster_run.sh)**
+SGE array job that submits one distribution × one polynomial degree, running 7 parallel tasks (one per externality cost value). Used with `Collateralized_Auction_genetic_script.py`.
+
+**[cluster_run_all.sh](cluster_run_all.sh)**
+Submits all combinations of distributions × polynomial degrees by calling `cluster_run.sh` repeatedly.
+
+**[run_sweep.sh](run_sweep.sh)**
+Earlier local sweep runner, predating `run_sweep_genetic2.py`.
+
+### Older Analysis
+
+**[Create_Plots.ipynb](Create_Plots.ipynb)**
+Jupyter notebook that loaded first-generation GA pickle files and generated figures. Superseded by `post_optimization_analysis.py`.
+
+**[plot_sweep.py](plot_sweep.py)**
+Earlier sweep plotting script.
+
+**[alternate_distributions.ipynb](alternate_distributions.ipynb)**
+Generates synthetic 2D (e, v) distributions for controlled experiments: single-modal normal, two-modal side-by-side, diagonal variants, and four-modal. Saved to `data/samples/`.
