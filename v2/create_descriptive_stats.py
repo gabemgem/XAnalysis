@@ -443,11 +443,11 @@ def fig_multi_note_posts(notes_r, figures_dir):
     for i, cnt in enumerate(cnts):
         if cnt >= threshold:
             ax1.text(i, cnt + max(cnts) * 0.005, f'{cnt:,}',
-                     ha='center', va='bottom', fontsize=7)
-    ax1.set_xlabel('Number of Notes per Post', fontsize=11)
-    ax1.set_ylabel('Number of Posts', fontsize=11)
-    ax1.set_title(f'Distribution of Notes per Post  (n={n_posts:,} posts,  showing up to {cap_bars}+)', fontsize=10)
-    ax1.tick_params(axis='x', labelsize=8, rotation=45 if cap_bars > 10 else 0)
+                     ha='center', va='bottom', fontsize=9)
+    ax1.set_xlabel('Number of Notes per Post', fontsize=13)
+    ax1.set_ylabel('Number of Posts', fontsize=13)
+    ax1.set_title(f'Distribution of Notes per Post  (n={n_posts:,} posts,  showing up to {cap_bars}+)', fontsize=12)
+    ax1.tick_params(axis='x', labelsize=10, rotation=45 if cap_bars > 10 else 0)
     ax1.grid(True, axis='y', alpha=0.3)
 
     # Panel 2: Direction mix
@@ -459,9 +459,9 @@ def fig_multi_note_posts(notes_r, figures_dir):
         pct = cnt / n_posts * 100
         ax2.text(bar.get_x() + bar.get_width() / 2,
                  bar.get_height() + max(dir_counts) * 0.01,
-                 f'{cnt:,} ({pct:.1f}%)', ha='center', va='bottom', fontsize=10)
-    ax2.set_ylabel('Number of Posts', fontsize=11)
-    ax2.set_title('Note Direction Mix per Post', fontsize=11)
+                 f'{cnt:,} ({pct:.1f}%)', ha='center', va='bottom', fontsize=12)
+    ax2.set_ylabel('Number of Posts', fontsize=13)
+    ax2.set_title('Note Direction Mix per Post', fontsize=13)
     ax2.grid(True, axis='y', alpha=0.3)
 
     # Panel 3: Heatmap — data-driven cap, log colorscale to handle wide range
@@ -482,11 +482,11 @@ def fig_multi_note_posts(notes_r, figures_dir):
     tick_labels = [str(i) if i < cap_heat else f'{cap_heat}+' for i in range(cap_heat + 1)]
     ax3.set_xticks(range(cap_heat + 1))
     ax3.set_yticks(range(cap_heat + 1))
-    ax3.set_xticklabels(tick_labels, fontsize=8)
-    ax3.set_yticklabels(tick_labels, fontsize=8)
+    ax3.set_xticklabels(tick_labels, fontsize=10)
+    ax3.set_yticklabels(tick_labels, fontsize=10)
 
     # Annotate cells; skip zeros; shrink font for large grids
-    cell_fs = max(5, 9 - cap_heat // 3)
+    cell_fs = max(7, 11 - cap_heat // 3)
     for i in range(heat_arr.shape[0]):
         for j in range(heat_arr.shape[1]):
             v = heat_arr[i, j]
@@ -495,10 +495,12 @@ def fig_multi_note_posts(notes_r, figures_dir):
             ax3.text(j, i, f'{v:,}', ha='center', va='center', fontsize=cell_fs,
                      color='white' if v > vmax * 0.4 else 'black')
 
-    fig.colorbar(im, ax=ax3, shrink=0.85, label='Number of Posts (log scale)')
-    ax3.set_xlabel('# Misleading Notes', fontsize=11)
-    ax3.set_ylabel('# Not-Misleading Notes', fontsize=11)
-    ax3.set_title(f'Posts by Note-Count Combination  (axes show up to {cap_heat}+)', fontsize=10)
+    cbar = fig.colorbar(im, ax=ax3, shrink=0.85)
+    cbar.set_label('Number of Posts (log scale)', fontsize=13)
+    cbar.ax.tick_params(labelsize=11)
+    ax3.set_xlabel('# Misleading Notes', fontsize=13)
+    ax3.set_ylabel('# Not-Misleading Notes', fontsize=13)
+    ax3.set_title(f'Posts by Note-Count Combination  (axes show up to {cap_heat}+)', fontsize=12)
 
     # Panel 4: Rating source breakdown
     cat_labels = [
@@ -522,18 +524,18 @@ def fig_multi_note_posts(notes_r, figures_dir):
         pct = cnt / total_ratings * 100 if total_ratings > 0 else 0
         ax4.text(bar.get_x() + bar.get_width() / 2,
                  bar.get_height() + max(cat_values) * 0.01,
-                 f'{cnt:,}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=9)
+                 f'{cnt:,}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=11)
     ax4.set_xticks(xpos)
-    ax4.set_xticklabels(cat_labels, fontsize=9)
-    ax4.set_ylabel('Total Ratings (across all posts)', fontsize=11)
-    ax4.set_title('Rating Sources: Agreement Signal Breakdown', fontsize=11)
+    ax4.set_xticklabels(cat_labels, fontsize=11)
+    ax4.set_ylabel('Total Ratings (across all posts)', fontsize=13)
+    ax4.set_title('Rating Sources: Agreement Signal Breakdown', fontsize=13)
     ax4.grid(True, axis='y', alpha=0.3)
     ax4.text(0.5, -0.16,
              'Dark red / light green = rater agrees with note  |  '
              'Dark green / light red = rater contradicts note direction',
-             transform=ax4.transAxes, ha='center', fontsize=8, style='italic', color='gray')
+             transform=ax4.transAxes, ha='center', fontsize=10, style='italic', color='gray')
 
-    fig.suptitle('Posts with Multiple and Conflicting Community Notes', fontsize=14)
+    fig.suptitle('Posts with Multiple and Conflicting Community Notes', fontsize=16)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     _save(fig, figures_dir, 'multi_note_posts.png')
 
